@@ -2,8 +2,14 @@ use std::sync::Arc;
 use eyre::{Result, Report};
 use jsonrpsee::http_client::{HttpClient};
 use sui_core::event_handler::SubscriptionHandler;
-use sui_indexer::{store::CheckpointData, models::checkpoints::Checkpoint};
+use futures::future::join_all;
+use sui_indexer::{
+  store::CheckpointData, utils::multi_get_full_transactions,
+};
 use sui_json_rpc::api::ReadApiClient;
+use sui_json_rpc_types::Checkpoint;
+
+const MULTI_GET_CHUNK_SIZE: usize = 50;
 
 type CheckpointSequenceNumber = u64;
 
@@ -24,18 +30,22 @@ impl CheckpointHandler {
   }
 
   /// Download all the data we need for one checkpoint.
-  async fn download_checkpoint_data(&self, seq: CheckpointSequenceNumber) -> Result<CheckpointData> {
-    let latest_fn_checkpoint_seq = self
-    .http_client
-    .get_latest_checkpoint_sequence_number()
+  pub async fn download_checkpoint_data(&self, seq: CheckpointSequenceNumber) -> Result<CheckpointData> {
+    let checkpoint = self.get_checkpoint(seq).await?;
+    let transactions = join_all(checkpoint.transactions.chunks(MULTI_GET_CHUNK_SIZE)
+    .map(|digests| multi_get_full_transactions(self.http_client.clone(), digests.to_vec())))
     .await
-    .map_err(|e| {
-      Report::msg(format!("Failed to get latest checkpoint sequence number and error {:?}", e))
+    .into_iter()
+    .try_fold(vec![], |mut acc, chunk| {
+      acc.extend(chunk?);
+      Ok::<_, Report>(acc)
     })?;
 
-
-
-    todo!()
+    Ok(CheckpointData {
+      checkpoint,
+      transactions,
+      changed_objects: vec![],
+    })
   }
 
   async fn get_checkpoint(&self, seq: CheckpointSequenceNumber) -> Result<Checkpoint> {

@@ -1,22 +1,20 @@
 use std::sync::Arc;
 use eyre::{Result, Report};
 use jsonrpsee::http_client::{HeaderMap, HeaderValue, HttpClient, HttpClientBuilder};
-use backoff::{
-  future::retry, ExponentialBackoff,
-};
-use sui_json_rpc::{JsonRpcServerBuilder, ServerHandle, CLIENT_SDK_TYPE_HEADER};
+use backoff::{ExponentialBackoff};
+use sui_json_rpc::{CLIENT_SDK_TYPE_HEADER};
 use sui_core::event_handler::SubscriptionHandler;
 use crate::checkpoint_handler::CheckpointHandler;
 
 pub struct FirehoseStreamer {
-  pub current_block_height: u64,
+  pub current_checkpoint_seq: u64,
   checkpoint_handler: Option<CheckpointHandler>,
 }
 
 impl FirehoseStreamer {
-  pub fn new(starting_block: u64,) -> Self {
+  pub fn new(starting_checkpoint_seq: u64,) -> Self {
     Self {
-      current_block_height: starting_block,
+      current_checkpoint_seq: starting_checkpoint_seq,
       checkpoint_handler: None,
     }
   }
@@ -44,9 +42,16 @@ impl FirehoseStreamer {
     }
   }
 
-  pub async fn convert_next_block(&mut self) -> Vec<()> {
+  pub async fn convert_next_block(&mut self) -> Result<()> {
+    println!("\nFIRE BLOCK_START {}", self.current_checkpoint_seq);
     let checkpoint_handler = self.checkpoint_handler.as_ref().expect("Checkpoint handler should be created");
-    todo!()
+    let checkpoint_data = checkpoint_handler.download_checkpoint_data(self.current_checkpoint_seq).await?;
+
+    for _onchain_txn in &checkpoint_data.transactions {
+
+    }
+
+    Ok(())
   }
 }
 
