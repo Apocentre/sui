@@ -22,8 +22,18 @@ message Checkpoint {
   bytes previous_digest = 5;
   // The running total gas costs of all transactions included in the current epoch so far until this checkpoint.
   GasCostSummary epoch_rolling_gas_cost_summary = 6;
-
-  // TODO
+  // Timestamp of the checkpoint - number of milliseconds from the Unix epoch
+  // Checkpoint timestamps are monotonic, but not strongly monotonic - subsequent
+  // checkpoints can have same timestamp if they originate from the same underlining consensus commit
+  uint64 timestamp_ms = 7;
+  // Present only on the final checkpoint of the epoch.
+  optional EndOfEpochData end_of_epoch_data = 8;
+  // Transaction digests (base58 encoded)
+  repeated bytes transactions = 9;
+  // Commitments to checkpoint state
+  repeated EpochCommitments checkpoint_commitments = 10;
+  // Validator Signature (base64  encoded)
+  bytes validator_signature = 11;
 }
 
 message Transaction {
@@ -43,4 +53,35 @@ message GasCostSummary {
   uint64 storage_rebate = 3;
   // The fee for the rebate. The portion of the storage rebate kept by the system.
   uint64 non_refundable_storage_fee = 4;
+}
+
+message EndOfEpochData {
+  // next_epoch_committee is `Some` if and only if the current checkpoint is
+  // the last checkpoint of an epoch.
+  // Therefore next_epoch_committee can be used to pick the last checkpoint of an epoch,
+  // which is often useful to get epoch level summary stats like total gas cost of an epoch,
+  // or the total number of transactions from genesis to the end of an epoch.
+  // The committee is stored as a vector of validator pub key and stake pairs. The vector
+  // should be sorted based on the Committee data structure.
+  NextEpochCommittee next_epoch_committee = 1;
+  // The protocol version that is in effect during the epoch that starts immediately after this checkpoint.
+  uint64 next_epoch_protocol_version = 2;
+  // Commitments to epoch specific state (e.g. live object set)
+  repeated EpochCommitments epoch_commitment = 3;
+}
+
+message NextEpochCommittee {
+  bytes authority_name = 1;
+  uint64 stake_unit = 2;
+}
+
+message EpochCommitments {
+  oneof epoch_commitments {
+    ECMHLiveObjectSetDigest ECMH_live_object_set_digest = 1;
+  };
+}
+
+message ECMHLiveObjectSetDigest {
+  // base58 encoded
+  bytes digest = 1;
 }
