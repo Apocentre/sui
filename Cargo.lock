@@ -8421,6 +8421,7 @@ dependencies = [
  "sui-json-rpc",
  "sui-json-rpc-types",
  "tokio",
+ "tonic-build",
 ]
 
 [[package]]

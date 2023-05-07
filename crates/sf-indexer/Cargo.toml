@@ -14,3 +14,6 @@ sui-json-rpc = { path = "../sui-json-rpc" }
 sui-json-rpc-types = { path = "../sui-json-rpc-types" }
 sui-indexer = { path = "../sui-indexer" }
 tokio = { workspace = true, features = ["full"] }
+
+[build-dependencies]
+tonic-build = { version = "0.8.4", features = ["prost"] }
