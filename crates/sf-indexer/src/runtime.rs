@@ -1,9 +1,7 @@
-use std::sync::Arc;
 use eyre::{Result, Report};
 use jsonrpsee::http_client::{HeaderMap, HeaderValue, HttpClient, HttpClientBuilder};
 use backoff::{ExponentialBackoff};
 use sui_json_rpc::{CLIENT_SDK_TYPE_HEADER};
-use sui_core::event_handler::SubscriptionHandler;
 use crate::checkpoint_handler::CheckpointHandler;
 
 pub struct FirehoseStreamer {
@@ -26,11 +24,10 @@ impl FirehoseStreamer {
       env!("CARGO_PKG_VERSION"),
     );
 
-    let event_handler = Arc::new(SubscriptionHandler::default());
 
     let checkpoint_handler = backoff::future::retry(ExponentialBackoff::default(), || async {
       let http_client = get_http_client(rpc_client_url)?;
-      let cp = CheckpointHandler::new(http_client, Arc::clone(&event_handler));
+      let cp = CheckpointHandler::new(http_client);
 
       Ok(cp)
     }).await?;
@@ -38,7 +35,7 @@ impl FirehoseStreamer {
     self.checkpoint_handler = Some(checkpoint_handler);
 
     loop {
-      self.convert_next_block().await;
+      self.convert_next_block().await?;
     }
   }
 

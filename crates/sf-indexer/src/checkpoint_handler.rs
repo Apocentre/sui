@@ -1,7 +1,5 @@
-use std::sync::Arc;
 use eyre::{Result, Report};
 use jsonrpsee::http_client::{HttpClient};
-use sui_core::event_handler::SubscriptionHandler;
 use futures::future::join_all;
 use sui_indexer::{
   store::CheckpointData, utils::multi_get_full_transactions,
@@ -15,17 +13,14 @@ type CheckpointSequenceNumber = u64;
 
 pub struct CheckpointHandler {
   http_client: HttpClient,
-  event_handler: Arc<SubscriptionHandler>,
 }
 
 impl CheckpointHandler {
   pub fn new(
     http_client: HttpClient,
-    event_handler: Arc<SubscriptionHandler>,
   ) -> Self {
     Self {
       http_client,
-      event_handler,
     }
   }
 
