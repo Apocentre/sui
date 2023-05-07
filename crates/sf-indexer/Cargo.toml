@@ -6,3 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+backoff = { version = "0.4", features = ["futures", "futures-core", "pin-project-lite", "tokio", "tokio_1"] }
+eyre = "0.6.8"
+jsonrpsee = { version = "0.16.2", features = ["full"] }
+sui-core = { path = "../sui-core" }
+sui-json-rpc = { path = "../sui-json-rpc" }
