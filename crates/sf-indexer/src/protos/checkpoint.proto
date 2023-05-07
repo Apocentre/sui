@@ -10,6 +10,19 @@ message CheckpointData {
 }
 
 message Checkpoint {
+  // Checkpoint's epoch ID
+  uint64 epoch = 1;
+  // Checkpoint sequence number
+  uint64 sequence_number = 2;
+  // Checkpoint digest (base58 encoded)
+  bytes digest = 3;
+  // Total number of transactions committed since genesis, including those in this checkpoint.
+  uint64 network_total_transactions = 4;
+  // Digest of the previous checkpoint
+  bytes previous_digest = 5;
+  // The running total gas costs of all transactions included in the current epoch so far until this checkpoint.
+  GasCostSummary epoch_rolling_gas_cost_summary = 6;
+
   // TODO
 }
 
@@ -19,4 +32,15 @@ message Transaction {
 
 message ChangedObject {
   // TODO
+}
+
+message GasCostSummary {
+  // Cost of computation/execution
+  uint64 computation_cost = 1;
+  // Storage cost, it's the sum of all storage cost for all objects created or mutated.
+  uint64 storage_cost = 2;
+  // The amount of storage cost refunded to the user for all objects deleted or mutated in the transaction.
+  uint64 storage_rebate = 3;
+  // The fee for the rebate. The portion of the storage rebate kept by the system.
+  uint64 non_refundable_storage_fee = 4;
 }
