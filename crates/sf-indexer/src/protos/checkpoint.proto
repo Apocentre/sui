@@ -1,0 +1,22 @@
+
+syntax = "proto3";
+
+package sui.checkpoint.v1;
+
+message CheckpointData {
+  Checkpoint checkpoint = 1;
+  repeated Transaction transactions = 2;
+  repeated ChangedObject changed_objects = 3;
+}
+
+message Checkpoint {
+  // TODO
+}
+
+message Transaction {
+  // TODO
+}
+
+message ChangedObject {
+  // TODO
+}
