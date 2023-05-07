@@ -11,3 +11,5 @@ eyre = "0.6.8"
 jsonrpsee = { version = "0.16.2", features = ["full"] }
 sui-core = { path = "../sui-core" }
 sui-json-rpc = { path = "../sui-json-rpc" }
+sui-indexer = { path = "../sui-indexer" }
+tokio = { workspace = true, features = ["full"] }

@@ -6,15 +6,18 @@ use backoff::{
 };
 use sui_json_rpc::{JsonRpcServerBuilder, ServerHandle, CLIENT_SDK_TYPE_HEADER};
 use sui_core::event_handler::SubscriptionHandler;
+use crate::checkpoint_handler::CheckpointHandler;
 
 pub struct FirehoseStreamer {
   pub current_block_height: u64,
+  checkpoint_handler: Option<CheckpointHandler>,
 }
 
 impl FirehoseStreamer {
   pub fn new(starting_block: u64,) -> Self {
     Self {
       current_block_height: starting_block,
+      checkpoint_handler: None,
     }
   }
 
@@ -27,12 +30,14 @@ impl FirehoseStreamer {
 
     let event_handler = Arc::new(SubscriptionHandler::default());
 
-    backoff::future::retry(ExponentialBackoff::default(), || async {
-      let event_handler_clone = event_handler.clone();
+    let checkpoint_handler = backoff::future::retry(ExponentialBackoff::default(), || async {
       let http_client = get_http_client(rpc_client_url)?;
-      Ok(())
-    })
-    .await?;
+      let cp = CheckpointHandler::new(http_client, Arc::clone(&event_handler));
+
+      Ok(cp)
+    }).await?;
+
+    self.checkpoint_handler = Some(checkpoint_handler);
 
     loop {
       self.convert_next_block().await;
@@ -40,6 +45,7 @@ impl FirehoseStreamer {
   }
 
   pub async fn convert_next_block(&mut self) -> Vec<()> {
+    let checkpoint_handler = self.checkpoint_handler.as_ref().expect("Checkpoint handler should be created");
     todo!()
   }
 }
