@@ -1,6 +1,6 @@
 use eyre::{Result, Report};
 use jsonrpsee::http_client::{HeaderMap, HeaderValue, HttpClient, HttpClientBuilder};
-use backoff::{ExponentialBackoff};
+use backoff::{ExponentialBackoff, future::retry};
 use sui_json_rpc::{CLIENT_SDK_TYPE_HEADER};
 use crate::checkpoint_handler::CheckpointHandler;
 
@@ -10,7 +10,7 @@ pub struct FirehoseStreamer {
 }
 
 impl FirehoseStreamer {
-  pub fn new(starting_checkpoint_seq: u64,) -> Self {
+  pub fn new(starting_checkpoint_seq: u64) -> Self {
     Self {
       current_checkpoint_seq: starting_checkpoint_seq,
       checkpoint_handler: None,
@@ -25,7 +25,7 @@ impl FirehoseStreamer {
     );
 
 
-    let checkpoint_handler = backoff::future::retry(ExponentialBackoff::default(), || async {
+    let checkpoint_handler = retry(ExponentialBackoff::default(), || async {
       let http_client = get_http_client(rpc_client_url)?;
       let cp = CheckpointHandler::new(http_client);
 

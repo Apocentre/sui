@@ -81,8 +81,8 @@ pub struct EndOfEpochData {
     /// or the total number of transactions from genesis to the end of an epoch.
     /// The committee is stored as a vector of validator pub key and stake pairs. The vector
     /// should be sorted based on the Committee data structure.
-    #[prost(message, optional, tag = "1")]
-    pub next_epoch_committee: ::core::option::Option<NextEpochCommittee>,
+    #[prost(message, repeated, tag = "1")]
+    pub next_epoch_committee: ::prost::alloc::vec::Vec<NextEpochCommittee>,
     /// The protocol version that is in effect during the epoch that starts immediately after this checkpoint.
     #[prost(uint64, tag = "2")]
     pub next_epoch_protocol_version: u64,
