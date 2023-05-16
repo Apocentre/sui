@@ -527,6 +527,10 @@ impl TransactionEventsDigest {
     pub fn random() -> Self {
         Self(Digest::random())
     }
+
+    pub fn into_inner(self) -> [u8; 32] {
+        self.0.into_inner()
+    }
 }
 
 impl fmt::Debug for TransactionEventsDigest {
