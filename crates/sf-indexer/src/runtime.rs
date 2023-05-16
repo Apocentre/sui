@@ -6,27 +6,28 @@ use crate::checkpoint_handler::CheckpointHandler;
 
 pub struct FirehoseStreamer {
   pub current_checkpoint_seq: u64,
+  rpc_client_url: String, 
   checkpoint_handler: Option<CheckpointHandler>,
 }
 
 impl FirehoseStreamer {
-  pub fn new(starting_checkpoint_seq: u64) -> Self {
+  pub fn new(starting_checkpoint_seq: u64, rpc_client_url: String) -> Self {
     Self {
       current_checkpoint_seq: starting_checkpoint_seq,
+      rpc_client_url,
       checkpoint_handler: None,
     }
   }
 
-  pub async fn start(&mut self, rpc_client_url: &str) -> Result<()> {
+  pub async fn start(&mut self) -> Result<()> {
       // Format is FIRE INIT aptos-node <PACKAGE_VERSION> <MAJOR_VERSION> <MINOR_VERSION> <CHAIN_ID>
     println!(
       "\nFIRE INIT sui-node {} sui",
       env!("CARGO_PKG_VERSION"),
     );
 
-
     let checkpoint_handler = retry(ExponentialBackoff::default(), || async {
-      let http_client = get_http_client(rpc_client_url)?;
+      let http_client = get_http_client(&self.rpc_client_url)?;
       let cp = CheckpointHandler::new(http_client);
 
       Ok(cp)

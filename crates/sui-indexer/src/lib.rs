@@ -47,7 +47,7 @@ use crate::apis::MoveUtilsApi;
 
 pub mod apis;
 pub mod errors;
-mod handlers;
+pub mod handlers;
 pub mod metrics;
 pub mod models;
 pub mod processors;

@@ -3,6 +3,7 @@ use jsonrpsee::http_client::{HttpClient};
 use futures::future::join_all;
 use sui_indexer::{
   store::CheckpointData, utils::multi_get_full_transactions,
+  handlers::checkpoint_handler::{get_object_changes, fetch_changed_objects},
 };
 use sui_json_rpc::api::ReadApiClient;
 use sui_json_rpc_types::Checkpoint;
@@ -36,10 +37,16 @@ impl CheckpointHandler {
       Ok::<_, Report>(acc)
     })?;
 
+    let object_changes = transactions
+    .iter()
+    .flat_map(|tx| get_object_changes(&tx.effects))
+    .collect::<Vec<_>>();
+    let changed_objects = fetch_changed_objects(self.http_client.clone(), object_changes).await?;
+
     Ok(CheckpointData {
       checkpoint,
       transactions,
-      changed_objects: vec![],
+      changed_objects,
     })
   }
 

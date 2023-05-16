@@ -8,8 +8,11 @@ edition = "2021"
 [dependencies]
 backoff = { version = "0.4", features = ["futures", "futures-core", "pin-project-lite", "tokio", "tokio_1"] }
 eyre = "0.6.8"
+env_logger = "0.10.0"
+clap = { version = "4.2.7", features = ["derive"] }
 futures = "0.3.23"
 jsonrpsee = { version = "0.16.2", features = ["full"] }
+log = "0.4.17"
 sui-json-rpc = { path = "../sui-json-rpc" }
 sui-json-rpc-types = { path = "../sui-json-rpc-types" }
 sui-indexer = { path = "../sui-indexer" }
