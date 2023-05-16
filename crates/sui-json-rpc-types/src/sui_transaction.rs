@@ -437,7 +437,7 @@ impl SuiTransactionBlockEffectsModifiedAtVersions {
   }
 
   pub fn sequence_number(&self) -> SequenceNumber {
-    self.object_id
+    self.sequence_number
   }
 }
 
