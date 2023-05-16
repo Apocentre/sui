@@ -431,6 +431,16 @@ pub struct SuiTransactionBlockEffectsModifiedAtVersions {
     sequence_number: SequenceNumber,
 }
 
+impl SuiTransactionBlockEffectsModifiedAtVersions {
+  pub fn object_id(&self) -> ObjectID {
+    self.object_id
+  }
+
+  pub fn sequence_number(&self) -> SequenceNumber {
+    self.object_id
+  }
+}
+
 /// The response from processing a transaction or a certified transaction
 #[serde_as]
 #[derive(Eq, PartialEq, Clone, Debug, Serialize, Deserialize, JsonSchema)]
