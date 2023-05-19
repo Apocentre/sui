@@ -303,6 +303,10 @@ impl MoveObjectType {
             MoveObjectType_::Other(o) => s == o,
         }
     }
+
+    pub fn into_inner(self) -> MoveObjectType_ {
+        self.0
+    }
 }
 
 impl From<StructTag> for MoveObjectType {
