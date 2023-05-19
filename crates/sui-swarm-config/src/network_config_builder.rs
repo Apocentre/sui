@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::genesis_config::AccountConfig;
+use crate::genesis_config::{AccountConfig, DEFAULT_GAS_AMOUNT};
 use crate::genesis_config::{GenesisConfig, ValidatorGenesisConfig};
 use crate::network_config::NetworkConfig;
 use fastcrypto::encoding::{Encoding, Hex};
@@ -314,11 +314,18 @@ impl<R: rand::RngCore + rand::CryptoRng> ConfigBuilder<R> {
             for validator in &validators {
                 let account_key: PublicKey = validator.account_key_pair.public();
                 let address = SuiAddress::from(&account_key);
+                // Give each validator some gas so they can pay for their transactions.
+                let gas_coin = TokenAllocation {
+                    recipient_address: address,
+                    amount_mist: DEFAULT_GAS_AMOUNT,
+                    staked_with_validator: None,
+                };
                 let stake = TokenAllocation {
                     recipient_address: address,
                     amount_mist: validator.stake,
                     staked_with_validator: Some(address),
                 };
+                builder.add_allocation(gas_coin);
                 builder.add_allocation(stake);
             }
             builder.build()
@@ -445,7 +452,9 @@ impl<R: rand::RngCore + rand::CryptoRng> ConfigBuilder<R> {
                     db_checkpoint_config: self.db_checkpoint_config.clone(),
                     indirect_objects_threshold: usize::MAX,
                     expensive_safety_check_config: ExpensiveSafetyCheckConfig::new_enable_all(),
-                    name_service_resolver_object_id: None,
+                    name_service_package_address: None,
+                    name_service_registry_id: None,
+                    name_service_reverse_registry_id: None,
                     transaction_deny_config: Default::default(),
                     certificate_deny_config: Default::default(),
                     state_debug_dump_config: self.state_debug_dump_config.clone(),
@@ -716,7 +725,9 @@ impl<'a> FullnodeConfigBuilder<'a> {
             indirect_objects_threshold: usize::MAX,
             // Copy the expensive safety check config from the first validator config.
             expensive_safety_check_config: validator_config.expensive_safety_check_config.clone(),
-            name_service_resolver_object_id: None,
+            name_service_package_address: None,
+            name_service_registry_id: None,
+            name_service_reverse_registry_id: None,
             transaction_deny_config: Default::default(),
             certificate_deny_config: Default::default(),
             state_debug_dump_config: Default::default(),

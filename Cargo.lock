@@ -5101,9 +5101,9 @@ dependencies = [
 
 [[package]]
 name = "mockall"
-version = "0.11.3"
+version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50e4a1c770583dac7ab5e2f6c139153b783a53a1bbee9729613f193e59828326"
+checksum = "4c84490118f2ee2d74570d114f3d0493cbf02790df303d2707606c3e14e07c96"
 dependencies = [
  "cfg-if",
  "downcast",
@@ -5116,9 +5116,9 @@ dependencies = [
 
 [[package]]
 name = "mockall_derive"
-version = "0.11.3"
+version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "832663583d5fa284ca8810bf7015e46c9fff9622d3cf34bd1eea5003fec06dd0"
+checksum = "22ce75669015c4f47b289fd4d4f56e894e4c96003ffdf3ac51313126f94c6cbb"
 dependencies = [
  "cfg-if",
  "proc-macro2 1.0.54",
@@ -9297,11 +9297,13 @@ dependencies = [
  "camino",
  "clap 3.2.23",
  "colored",
+ "const-str",
  "csv",
  "expect-test",
  "fastcrypto",
  "fs_extra",
  "futures",
+ "git-version",
  "indexmap",
  "inquire",
  "insta",
@@ -9647,6 +9649,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-enum-compat-util"
+version = "0.1.0"
+dependencies = [
+ "serde_yaml",
+ "workspace-hack",
+]
+
+[[package]]
 name = "sui-faucet"
 version = "1.2.0"
 dependencies = [
@@ -9709,6 +9719,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bcs",
+ "git-version",
  "serde 1.0.152",
  "serde_json",
  "sui-framework",
@@ -9857,6 +9868,7 @@ dependencies = [
  "jsonrpsee",
  "jsonrpsee-proc-macros",
  "linked-hash-map",
+ "mockall",
  "move-binary-format",
  "move-bytecode-utils",
  "move-core-types",
@@ -9914,7 +9926,9 @@ dependencies = [
  "serde 1.0.152",
  "serde_json",
  "serde_with",
+ "sui-enum-compat-util",
  "sui-json",
+ "sui-macros",
  "sui-protocol-config",
  "sui-types",
  "tracing",
@@ -9959,8 +9973,10 @@ dependencies = [
  "assert_cmd",
  "clap 3.2.23",
  "colored",
+ "const-str",
  "fastcrypto",
  "futures",
+ "git-version",
  "jemalloc-ctl",
  "jsonrpsee",
  "move-binary-format",
@@ -10078,8 +10094,10 @@ dependencies = [
  "arc-swap",
  "axum",
  "clap 3.2.23",
+ "const-str",
  "fastcrypto",
  "futures",
+ "git-version",
  "mysten-common",
  "mysten-metrics",
  "mysten-network",
@@ -10155,6 +10173,7 @@ dependencies = [
  "msim-macros",
  "proc-macro2 1.0.54",
  "quote 1.0.26",
+ "sui-enum-compat-util",
  "syn 2.0.10",
  "workspace-hack",
 ]
@@ -10236,10 +10255,12 @@ dependencies = [
  "colored",
  "futures",
  "jsonrpsee",
+ "lru",
  "move-binary-format",
  "move-bytecode-utils",
  "move-core-types",
  "move-package",
+ "parking_lot 0.12.1",
  "prometheus",
  "rand 0.8.5",
  "serde 1.0.152",
@@ -10784,14 +10805,12 @@ dependencies = [
  "bcs",
  "bincode",
  "byteorder",
- "const-str",
  "criterion",
  "derivative",
  "derive_more",
  "enum_dispatch",
  "eyre",
  "fastcrypto",
- "git-version",
  "indexmap",
  "itertools",
  "move-binary-format",
@@ -10816,12 +10835,14 @@ dependencies = [
  "serde-name",
  "serde_json",
  "serde_with",
+ "serde_yaml",
  "shared-crypto",
  "signature 1.6.4",
  "static_assertions",
  "strum",
  "strum_macros",
  "sui-cost-tables",
+ "sui-enum-compat-util",
  "sui-macros",
  "sui-protocol-config",
  "tap",
@@ -11781,7 +11802,6 @@ dependencies = [
  "sui-core",
  "sui-move-build",
  "sui-protocol-config",
- "sui-replay",
  "sui-types",
  "test-utils",
  "tokio",
@@ -11855,6 +11875,7 @@ dependencies = [
  "tokio",
  "tracing",
  "typed-store-derive",
+ "uint",
  "workspace-hack",
 ]
 
