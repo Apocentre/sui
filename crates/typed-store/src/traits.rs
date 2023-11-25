@@ -20,28 +20,24 @@ where
     /// Returns true if the map contains a value for the specified key.
     fn contains_key(&self, key: &K) -> Result<bool, Self::Error>;
 
+    /// Returns true if the map contains a value for the specified key.
+    fn multi_contains_keys<J>(
+        &self,
+        keys: impl IntoIterator<Item = J>,
+    ) -> Result<Vec<bool>, Self::Error>
+    where
+        J: Borrow<K>,
+    {
+        keys.into_iter()
+            .map(|key| self.contains_key(key.borrow()))
+            .collect()
+    }
+
     /// Returns the value for the given key from the map, if it exists.
     fn get(&self, key: &K) -> Result<Option<V>, Self::Error>;
 
     /// Returns the raw value (serialized bytes) for the given key from the map, if it exists.
     fn get_raw_bytes(&self, key: &K) -> Result<Option<Vec<u8>>, Self::Error>;
-
-    /// Returns the value for the given key from the map, if it exists
-    /// or the given default value if it does not.
-    /// This method is not thread safe
-    fn get_or_insert_unsafe<F: FnOnce() -> V>(
-        &self,
-        key: &K,
-        default: F,
-    ) -> Result<V, Self::Error> {
-        self.get(key).and_then(|optv| match optv {
-            Some(v) => Ok(v),
-            None => {
-                self.insert(key, &default())?;
-                self.get(key).transpose().expect("default just inserted")
-            }
-        })
-    }
 
     /// Inserts the given key-value pair into the map.
     fn insert(&self, key: &K, value: &V) -> Result<(), Self::Error>;
@@ -50,13 +46,17 @@ where
     fn remove(&self, key: &K) -> Result<(), Self::Error>;
 
     /// Removes every key-value pair from the map.
-    fn clear(&self) -> Result<(), Self::Error>;
+    fn unsafe_clear(&self) -> Result<(), Self::Error>;
+
+    /// Uses delete range on the entire key range
+    fn schedule_delete_all(&self) -> Result<(), TypedStoreError>;
 
     /// Returns true if the map is empty, otherwise false.
     fn is_empty(&self) -> bool;
 
-    /// Returns an iterator visiting each key-value pair in the map.
-    fn iter(&'a self) -> Self::Iterator;
+    /// Returns an unbounded iterator visiting each key-value pair in the map.
+    /// This is potentially unsafe as it can perform a full table scan
+    fn unbounded_iter(&'a self) -> Self::Iterator;
 
     /// Returns an iterator visiting each key-value pair in the map.
     fn iter_with_bounds(&'a self, lower_bound: Option<K>, upper_bound: Option<K>)

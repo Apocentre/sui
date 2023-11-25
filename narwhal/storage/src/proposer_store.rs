@@ -57,23 +57,27 @@ impl ProposerStore {
 mod test {
     use crate::{ProposerStore, LAST_PROPOSAL_KEY};
     use store::Map;
-    use test_utils::{fixture_batch_with_transactions, CommitteeFixture};
+    use test_utils::{fixture_batch_with_transactions, latest_protocol_version, CommitteeFixture};
     use types::{CertificateDigest, Header, Round};
 
     pub fn create_header_for_round(round: Round) -> Header {
-        let builder = types::HeaderV1Builder::default();
+        let builder = types::HeaderV2Builder::default();
         let fixture = CommitteeFixture::builder().randomize_ports(true).build();
         let primary = fixture.authorities().next().unwrap();
         let id = primary.id();
         let header = builder
             .author(id)
             .round(round)
-            .epoch(0)
+            .epoch(fixture.committee().epoch())
             .parents([CertificateDigest::default()].iter().cloned().collect())
-            .with_payload_batch(fixture_batch_with_transactions(10), 0, 0)
+            .with_payload_batch(
+                fixture_batch_with_transactions(10, &latest_protocol_version()),
+                0,
+                0,
+            )
             .build()
             .unwrap();
-        Header::V1(header)
+        Header::V2(header)
     }
 
     #[tokio::test]

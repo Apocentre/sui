@@ -12,10 +12,10 @@ use crate::sui_serde::SuiTypeTag;
 use crate::{MoveTypeTagTrait, ObjectID, SequenceNumber, SUI_FRAMEWORK_ADDRESS};
 use fastcrypto::encoding::Base58;
 use fastcrypto::hash::HashFunction;
+use move_core_types::annotated_value::{MoveStruct, MoveValue};
 use move_core_types::ident_str;
 use move_core_types::identifier::IdentStr;
 use move_core_types::language_storage::{StructTag, TypeTag};
-use move_core_types::value::{MoveStruct, MoveValue};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -83,6 +83,15 @@ pub enum DynamicFieldType {
     DynamicObject,
 }
 
+impl Display for DynamicFieldType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DynamicFieldType::DynamicField => write!(f, "DynamicField"),
+            DynamicFieldType::DynamicObject => write!(f, "DynamicObject"),
+        }
+    }
+}
+
 impl DynamicFieldInfo {
     pub fn is_dynamic_field(tag: &StructTag) -> bool {
         tag.address == SUI_FRAMEWORK_ADDRESS
@@ -126,6 +135,15 @@ impl DynamicFieldInfo {
                 .clone()),
             _ => Err(SuiError::ObjectDeserializationError {
                 error: format!("Error extracting dynamic object name from object: {tag}"),
+            }),
+        }
+    }
+
+    pub fn try_extract_field_value(tag: &StructTag) -> SuiResult<TypeTag> {
+        match tag.type_params.last() {
+            Some(value_type) => Ok(value_type.clone()),
+            None => Err(SuiError::ObjectDeserializationError {
+                error: format!("Error extracting dynamic object value from object: {tag}"),
             }),
         }
     }
@@ -180,36 +198,26 @@ impl DynamicFieldInfo {
     }
 }
 
-fn extract_field_from_move_struct<'a>(
+pub fn extract_field_from_move_struct<'a>(
     move_struct: &'a MoveStruct,
     field_name: &str,
 ) -> Option<&'a MoveValue> {
-    match move_struct {
-        MoveStruct::WithTypes { fields, .. } | MoveStruct::WithFields(fields) => {
-            fields.iter().find_map(|(id, value)| {
-                if id.to_string() == field_name {
-                    Some(value)
-                } else {
-                    None
-                }
-            })
+    move_struct.fields.iter().find_map(|(id, value)| {
+        if id.to_string() == field_name {
+            Some(value)
+        } else {
+            None
         }
-        _ => None,
-    }
+    })
 }
 
 fn extract_object_id(value: &MoveStruct) -> Option<ObjectID> {
     // id:UID is the first value in an object
-    let uid_value = match value {
-        MoveStruct::Runtime(fields) => fields.get(0)?,
-        MoveStruct::WithFields(fields) | MoveStruct::WithTypes { fields, .. } => &fields.get(0)?.1,
-    };
+    let uid_value = &value.fields.get(0)?.1;
+
     // id is the first value in UID
     let id_value = match uid_value {
-        MoveValue::Struct(MoveStruct::Runtime(fields)) => fields.get(0)?,
-        MoveValue::Struct(
-            MoveStruct::WithFields(fields) | MoveStruct::WithTypes { fields, .. },
-        ) => &fields.get(0)?.1,
+        MoveValue::Struct(MoveStruct { fields, .. }) => &fields.get(0)?.1,
         _ => return None,
     };
     extract_id_value(id_value)
@@ -218,10 +226,7 @@ fn extract_object_id(value: &MoveStruct) -> Option<ObjectID> {
 fn extract_id_value(id_value: &MoveValue) -> Option<ObjectID> {
     // the id struct has a single bytes field
     let id_bytes_value = match id_value {
-        MoveValue::Struct(MoveStruct::Runtime(fields)) => fields.get(0)?,
-        MoveValue::Struct(
-            MoveStruct::WithFields(fields) | MoveStruct::WithTypes { fields, .. },
-        ) => &fields.get(0)?.1,
+        MoveValue::Struct(MoveStruct { fields, .. }) => &fields.get(0)?.1,
         _ => return None,
     };
     // the bytes field should be an address
@@ -232,15 +237,10 @@ fn extract_id_value(id_value: &MoveValue) -> Option<ObjectID> {
 }
 
 pub fn is_dynamic_object(move_struct: &MoveStruct) -> bool {
-    match move_struct {
-        MoveStruct::WithTypes { type_, .. } => {
-            matches!(
-                &type_.type_params[0],
-                TypeTag::Struct(tag) if DynamicFieldInfo::is_dynamic_object_field_wrapper(tag)
-            )
-        }
-        _ => false,
-    }
+    matches!(
+        &move_struct.type_.type_params[0],
+        TypeTag::Struct(tag) if DynamicFieldInfo::is_dynamic_object_field_wrapper(tag)
+    )
 }
 
 pub fn derive_dynamic_field_id<T>(
@@ -271,13 +271,12 @@ where
 /// from the `object_store`. The key type `K` must implement `MoveTypeTagTrait` which has an associated
 /// function that returns the Move type tag.
 /// Note that this function returns the Field object itself, not the value in the field.
-pub fn get_dynamic_field_object_from_store<S, K>(
-    object_store: &S,
+pub fn get_dynamic_field_object_from_store<K>(
+    object_store: &dyn ObjectStore,
     parent_id: ObjectID,
     key: &K,
 ) -> Result<Object, SuiError>
 where
-    S: ObjectStore,
     K: MoveTypeTagTrait + Serialize + DeserializeOwned + fmt::Debug,
 {
     let id = derive_dynamic_field_id(parent_id, &K::get_type_tag(), &bcs::to_bytes(key).unwrap())
@@ -293,13 +292,12 @@ where
 
 /// Similar to `get_dynamic_field_object_from_store`, but returns the value in the field instead of
 /// the Field object itself.
-pub fn get_dynamic_field_from_store<S, K, V>(
-    object_store: &S,
+pub fn get_dynamic_field_from_store<K, V>(
+    object_store: &dyn ObjectStore,
     parent_id: ObjectID,
     key: &K,
 ) -> Result<V, SuiError>
 where
-    S: ObjectStore,
     K: MoveTypeTagTrait + Serialize + DeserializeOwned + fmt::Debug,
     V: Serialize + DeserializeOwned,
 {

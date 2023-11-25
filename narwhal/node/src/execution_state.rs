@@ -20,8 +20,8 @@ impl SimpleExecutionState {
 
 #[async_trait]
 impl ExecutionState for SimpleExecutionState {
-    async fn handle_consensus_output(&self, consensus_output: ConsensusOutput) {
-        for (_, batches) in consensus_output.batches {
+    async fn handle_consensus_output(&mut self, consensus_output: ConsensusOutput) {
+        for batches in consensus_output.batches {
             for batch in batches {
                 for transaction in batch.transactions().iter() {
                     if let Err(err) = self

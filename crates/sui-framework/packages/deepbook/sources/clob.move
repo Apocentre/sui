@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+#[allow(unused_use)]
 module deepbook::clob {
     use std::option;
     use std::type_name::{Self, TypeName};
@@ -18,14 +19,12 @@ module deepbook::clob {
     use sui::tx_context::TxContext;
 
     use deepbook::critbit::{Self, CritbitTree, is_empty, borrow_mut_leaf_by_index, min_leaf, remove_leaf_by_index, max_leaf, next_leaf, previous_leaf, borrow_leaf_by_index, borrow_leaf_by_key, find_leaf, insert_leaf};
-    use deepbook::custodian::{Self, Custodian, AccountCap, mint_account_cap};
+    use deepbook::custodian::{Self, Custodian, AccountCap};
     use deepbook::math::Self as clob_math;
 
-    #[test_only] use sui::coin::mint_for_testing;
-    #[test_only] use sui::test_scenario::{Self, Scenario};
-
     // <<<<<<<<<<<<<<<<<<<<<<<< Error codes <<<<<<<<<<<<<<<<<<<<<<<<
-    const ENotImplemented: u64 = 1;
+    const DEPRECATED: u64 = 0;
+    #[test_only]
     const EInvalidFeeRateRebateRate: u64 = 2;
     const EInvalidOrderId: u64 = 3;
     const EUnauthorizedCancel: u64 = 4;
@@ -39,13 +38,13 @@ module deepbook::clob {
     const EOrderCannotBeFullyPassive: u64 = 10;
     const EInvalidTickPrice: u64 = 11;
     const EInvalidUser: u64 = 12;
+    #[test_only]
     const ENotEqual: u64 = 13;
     const EInvalidRestriction: u64 = 14;
-    const ELevelNotEmpty: u64 = 15;
+    #[test_only]
     const EInvalidPair: u64 = 16;
-    const EInvalidBaseBalance: u64 = 17;
-    const EInvalidFee: u64 = 18;
     const EInvalidExpireTimestamp: u64 = 19;
+    #[test_only]
     const EInvalidTickSizeLotSize: u64 = 20;
 
     // <<<<<<<<<<<<<<<<<<<<<<<< Error codes <<<<<<<<<<<<<<<<<<<<<<<<
@@ -53,7 +52,6 @@ module deepbook::clob {
     // <<<<<<<<<<<<<<<<<<<<<<<< Constants <<<<<<<<<<<<<<<<<<<<<<<<
     const FLOAT_SCALING: u64 = 1_000_000_000;
     // Restrictions on limit orders.
-    const N_RESTRICTIONS: u8 = 4;
     const NO_RESTRICTION: u8 = 0;
     // Mandates that whatever amount of an order that can be executed in the current transaction, be filled and then the rest of the order canceled.
     const IMMEDIATE_OR_CANCEL: u8 = 1;
@@ -61,19 +59,21 @@ module deepbook::clob {
     const FILL_OR_KILL: u8 = 2;
     // Mandates that the entire order be passive. Otherwise, cancel the order.
     const POST_OR_ABORT: u8 = 3;
+    #[test_only]
     const MIN_BID_ORDER_ID: u64 = 1;
     const MIN_ASK_ORDER_ID: u64 = 1 << 63;
     const MIN_PRICE: u64 = 0;
     const MAX_PRICE: u64 = ((1u128 << 64 - 1) as u64);
+    #[test_only]
     const TIMESTAMP_INF: u64 = ((1u128 << 64 - 1) as u64);
-    const REFERENCE_TAKER_FEE_RATE: u64 = 5_000_000;
-    const REFERENCE_MAKER_REBATE_RATE: u64 = 2_500_000;
+    #[test_only]
     const FEE_AMOUNT_FOR_CREATE_POOL: u64 = 100 * 1_000_000_000; // 100 SUI
 
     // <<<<<<<<<<<<<<<<<<<<<<<< Constants <<<<<<<<<<<<<<<<<<<<<<<<
 
     // <<<<<<<<<<<<<<<<<<<<<<<< Events <<<<<<<<<<<<<<<<<<<<<<<<
 
+    #[allow(unused_field)]
     /// Emitted when a new pool is created
     struct PoolCreated has copy, store, drop {
         /// object ID of the newly created pool
@@ -156,6 +156,7 @@ module deepbook::clob {
         // other price level info
     }
 
+    #[allow(unused_field)]
     struct Pool<phantom BaseAsset, phantom QuoteAsset> has key {
         // The key to the following Critbit Tree are order prices.
         id: UID,
@@ -197,10 +198,11 @@ module deepbook::clob {
         linked_table::destroy_empty(orders);
     }
 
-    public fun create_account(ctx: &mut TxContext): AccountCap {
-        mint_account_cap(ctx)
+    public fun create_account(_ctx: &mut TxContext): AccountCap {
+        abort DEPRECATED
     }
 
+    #[test_only]
     fun create_pool_<BaseAsset, QuoteAsset>(
         taker_fee_rate: u64,
         maker_rebate_rate: u64,
@@ -248,21 +250,14 @@ module deepbook::clob {
         })
     }
 
+    #[allow(unused_type_parameter)]
     public fun create_pool<BaseAsset, QuoteAsset>(
-        tick_size: u64,
-        lot_size: u64,
-        creation_fee: Coin<SUI>,
-        ctx: &mut TxContext,
+        _tick_size: u64,
+        _lot_size: u64,
+        _creation_fee: Coin<SUI>,
+        _ctx: &mut TxContext,
     ) {
-        assert!(coin::value(&creation_fee) == FEE_AMOUNT_FOR_CREATE_POOL, EInvalidFee);
-        create_pool_<BaseAsset, QuoteAsset>(
-            REFERENCE_TAKER_FEE_RATE,
-            REFERENCE_MAKER_REBATE_RATE,
-            tick_size,
-            lot_size,
-            coin::into_balance(creation_fee),
-            ctx
-        )
+        abort DEPRECATED
     }
 
     public fun deposit_base<BaseAsset, QuoteAsset>(
@@ -392,16 +387,17 @@ module deepbook::clob {
                     emit_order_canceled<BaseAsset, QuoteAsset>(pool_id, maker_order);
                 } else {
                     // Calculate how much quote asset (maker_quote_quantity) is required, including the commission, to fill the maker order.
-                    let (flag, maker_quote_quantity) = clob_math::mul_round(
+                    let maker_quote_quantity_without_commission = clob_math::mul(
                         maker_base_quantity,
                         maker_order.price
                     );
-                    if (flag) maker_quote_quantity = maker_quote_quantity + 1;
-                    (flag, maker_quote_quantity) = clob_math::mul_round(
-                        maker_quote_quantity,
-                        FLOAT_SCALING + pool.taker_fee_rate
+                    let (is_round_down, taker_commission)  = clob_math::unsafe_mul_round(
+                        maker_quote_quantity_without_commission,
+                        pool.taker_fee_rate
                     );
-                    if (flag) maker_quote_quantity = maker_quote_quantity + 1;
+                    if (is_round_down)  taker_commission = taker_commission + 1;
+
+                    let maker_quote_quantity = maker_quote_quantity_without_commission + taker_commission;
 
                     // Total base quantity filled.
                     let filled_base_quantity: u64;
@@ -410,22 +406,19 @@ module deepbook::clob {
                     // Total quote quantity paid by taker.
                     // filled_quote_quantity_without_commission * (FLOAT_SCALING + taker_fee_rate) = filled_quote_quantity
                     let filled_quote_quantity_without_commission: u64;
-                    if (taker_quote_quantity_remaining >= maker_quote_quantity) {
+                    if (taker_quote_quantity_remaining > maker_quote_quantity) {
                         filled_quote_quantity = maker_quote_quantity;
-                        (_, filled_quote_quantity_without_commission) = clob_math::div_round(
-                            filled_quote_quantity,
-                            FLOAT_SCALING + pool.taker_fee_rate
-                        );
+                        filled_quote_quantity_without_commission = maker_quote_quantity_without_commission;
                         filled_base_quantity = maker_base_quantity;
                     } else {
                         terminate_loop = true;
                         // if not enough quote quantity to pay for taker commission, then no quantity will be filled
-                        (_, filled_quote_quantity_without_commission) = clob_math::unsafe_div_round(
+                        filled_quote_quantity_without_commission = clob_math::unsafe_div(
                             taker_quote_quantity_remaining,
                             FLOAT_SCALING + pool.taker_fee_rate
                         );
                         // filled_base_quantity = 0 is permitted since filled_quote_quantity_without_commission can be 0
-                        (_, filled_base_quantity) = clob_math::unsafe_div_round(
+                        filled_base_quantity = clob_math::unsafe_div(
                             filled_quote_quantity_without_commission,
                             maker_order.price
                         );
@@ -455,9 +448,6 @@ module deepbook::clob {
 
                     // maker in ask side, decrease maker's locked base asset, increase maker's available quote asset
                     taker_quote_quantity_remaining = taker_quote_quantity_remaining - filled_quote_quantity;
-                    if (taker_quote_quantity_remaining == 0) {
-                        terminate_loop = true;
-                    };
                     let locked_base_balance = custodian::decrease_user_locked_balance<BaseAsset>(
                         &mut pool.base_custodian,
                         maker_order.owner,
@@ -562,10 +552,9 @@ module deepbook::clob {
                     let filled_base_quantity =
                         if (taker_base_quantity_remaining > maker_base_quantity) { maker_base_quantity }
                         else { taker_base_quantity_remaining };
-                    // filled_quote_quantity to maker,  no need to round up
+
                     let filled_quote_quantity = clob_math::mul(filled_base_quantity, maker_order.price);
 
-                    // rebate_fee to maker, no need to round up
                     // if maker_rebate = 0 due to underflow, maker will not receive a rebate
                     let maker_rebate = clob_math::unsafe_mul(filled_quote_quantity, pool.maker_rebate_rate);
                     // if taker_commission = 0 due to underflow, round it up to 1
@@ -683,10 +672,9 @@ module deepbook::clob {
                     let filled_base_quantity =
                         if (taker_base_quantity_remaining >= maker_base_quantity) { maker_base_quantity }
                         else { taker_base_quantity_remaining };
-                    // filled_quote_quantity from maker, need to round up, but do in decrease stage
+
                     let filled_quote_quantity = clob_math::mul(filled_base_quantity, maker_order.price);
 
-                    // rebate_fee to maker, no need to round up
                     // if maker_rebate = 0 due to underflow, maker will not receive a rebate
                     let maker_rebate = clob_math::unsafe_mul(filled_quote_quantity, pool.maker_rebate_rate);
                     // if taker_commission = 0 due to underflow, round it up to 1
@@ -1073,7 +1061,7 @@ module deepbook::clob {
             if (is_bid) { &pool.bids } else { &pool.asks },
             tick_price);
         assert!(tick_exists, EInvalidOrderId);
-        let order = remove_order<BaseAsset, QuoteAsset>(
+        let order = remove_order(
             if (is_bid) { &mut pool.bids } else { &mut pool.asks },
             usr_open_orders,
             tick_index,
@@ -1089,7 +1077,7 @@ module deepbook::clob {
         emit_order_canceled<BaseAsset, QuoteAsset>(*object::uid_as_inner(&pool.id), &order);
     }
 
-    fun remove_order<BaseAsset, QuoteAsset>(
+    fun remove_order(
         open_orders: &mut CritbitTree<TickLevel>,
         usr_open_orders: &mut LinkedTable<u64, u64>,
         tick_index: u64,
@@ -1124,7 +1112,7 @@ module deepbook::clob {
                 if (is_bid) { &mut pool.bids }
                 else { &mut pool.asks };
             let (_, tick_index) = critbit::find_leaf(open_orders, order_price);
-            let order = remove_order<BaseAsset, QuoteAsset>(
+            let order = remove_order(
                 open_orders,
                 usr_open_order_ids,
                 tick_index,
@@ -1181,7 +1169,7 @@ module deepbook::clob {
                 assert!(tick_exists, EInvalidTickPrice);
                 tick_index = new_tick_index;
             };
-            let order = remove_order<BaseAsset, QuoteAsset>(
+            let order = remove_order(
                 if (is_bid) { &mut pool.bids } else { &mut pool.asks },
                 usr_open_orders,
                 tick_index,
@@ -1237,6 +1225,16 @@ module deepbook::clob {
         (base_avail, base_locked, quote_avail, quote_locked)
     }
 
+    /// Query the market price of order book
+    /// returns (best_bid_price, best_ask_price)
+    public fun get_market_price<BaseAsset, QuoteAsset>(
+        pool: &Pool<BaseAsset, QuoteAsset>
+    ): (u64, u64){
+        let (bid_price, _) = critbit::max_leaf(&pool.bids);
+        let (ask_price, _) = critbit::min_leaf(&pool.asks);
+        return (bid_price, ask_price)
+    }
+
     /// Enter a price range and return the level2 order depth of all valid prices within this price range in bid side
     /// returns two vectors of u64
     /// The previous is a list of all valid prices
@@ -1257,7 +1255,7 @@ module deepbook::clob {
         let depth_vec = vector::empty<u64>();
         if (price_low == 0) { return (price_vec, depth_vec) };
         while (price_low <= price_high) {
-            let depth = get_level2_book_status<BaseAsset, QuoteAsset>(
+            let depth = get_level2_book_status(
                 &pool.bids,
                 price_low,
                 clock::timestamp_ms(clock)
@@ -1291,7 +1289,7 @@ module deepbook::clob {
         let depth_vec = vector::empty<u64>();
         if (price_low == 0) { return (price_vec, depth_vec) };
         while (price_low <= price_high) {
-            let depth = get_level2_book_status<BaseAsset, QuoteAsset>(
+            let depth = get_level2_book_status(
                 &pool.asks,
                 price_low,
                 clock::timestamp_ms(clock)
@@ -1306,7 +1304,7 @@ module deepbook::clob {
     }
 
     /// internal func to retrive single depth of a tick price
-    fun get_level2_book_status<BaseAsset, QuoteAsset>(
+    fun get_level2_book_status(
         open_orders: &CritbitTree<TickLevel>,
         price: u64,
         time_stamp: u64
@@ -1345,6 +1343,8 @@ module deepbook::clob {
 
 
     // Note that open orders and quotes can be directly accessed by loading in the entire Pool.
+
+    #[test_only] use sui::test_scenario::{Self, Scenario};
 
     #[test_only] const E_NULL: u64 = 0;
 
@@ -1650,7 +1650,7 @@ module deepbook::clob {
     ): Order {
         let order;
         if (is_bid) {
-            order = remove_order<BaseAsset, QuoteAsset>(
+            order = remove_order(
                 &mut pool.bids,
                 borrow_mut(&mut pool.usr_open_orders, owner),
                 tick_index,
@@ -1658,7 +1658,7 @@ module deepbook::clob {
                 owner
             )
         } else {
-            order = remove_order<BaseAsset, QuoteAsset>(
+            order = remove_order(
                 &mut pool.asks,
                 borrow_mut(&mut pool.usr_open_orders, owner),
                 tick_index,
@@ -1669,505 +1669,8 @@ module deepbook::clob {
         order
     }
 
-    #[test]
-    #[expected_failure(abort_code = EInvalidRestriction)]
-    fun test_place_limit_order_with_invalid_restrictions_() {
-        let owner: address = @0xAAAA;
-        let alice: address = @0xBBBB;
-        let test = test_scenario::begin(owner);
-        test_scenario::next_tx(&mut test, owner);
-        {
-            setup_test(0, 0, &mut test, owner);
-        };
-        test_scenario::next_tx(&mut test, owner);
-        {
-            mint_account_cap_transfer(
-                alice,
-                test_scenario::ctx(&mut test)
-            );
-        };
-        test_scenario::next_tx(&mut test, alice);
-        {
-            let pool = test_scenario::take_shared<Pool<SUI, USD>>(&mut test);
-            let clock = test_scenario::take_shared<Clock>(&test);
-            let account_cap = test_scenario::take_from_address<AccountCap>(&test, alice);
-            let account_cap_user = object::id(&account_cap);
-            custodian::deposit(
-                &mut pool.base_custodian,
-                mint_for_testing<SUI>(1000 * 100000000, test_scenario::ctx(&mut test)),
-                account_cap_user
-            );
-            custodian::deposit(
-                &mut pool.quote_custodian,
-                mint_for_testing<USD>(10000 * 100000000, test_scenario::ctx(&mut test)),
-                account_cap_user
-            );
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                5 * FLOAT_SCALING,
-                200 * 100000000,
-                true,
-                TIMESTAMP_INF,
-                5,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            test_scenario::return_shared(pool);
-            test_scenario::return_shared(clock);
-            test_scenario::return_to_address<AccountCap>(alice, account_cap);
-        };
-
-        test_scenario::end(test);
-    }
-
-    #[test]
-    #[expected_failure(abort_code = EOrderCannotBeFullyFilled)]
-    fun test_place_limit_order_with_restrictions_FILL_OR_KILL_() {
-        let owner: address = @0xAAAA;
-        let alice: address = @0xBBBB;
-        let bob: address = @0xCCCC;
-        let test = test_scenario::begin(owner);
-        test_scenario::next_tx(&mut test, owner);
-        {
-            setup_test(0, 0, &mut test, owner);
-        };
-        test_scenario::next_tx(&mut test, owner);
-        {
-            mint_account_cap_transfer(
-                alice,
-                test_scenario::ctx(&mut test)
-            );
-            mint_account_cap_transfer(
-                bob,
-                test_scenario::ctx(&mut test)
-            );
-        };
-        test_scenario::next_tx(&mut test, alice);
-        {
-            let pool = test_scenario::take_shared<Pool<SUI, USD>>(&mut test);
-            let clock = test_scenario::take_shared<Clock>(&test);
-            let account_cap = test_scenario::take_from_address<AccountCap>(&test, alice);
-            let account_cap_user = object::id(&account_cap);
-            custodian::deposit(
-                &mut pool.base_custodian,
-                mint_for_testing<SUI>(1000 * 100000000, test_scenario::ctx(&mut test)),
-                account_cap_user
-            );
-            custodian::deposit(
-                &mut pool.quote_custodian,
-                mint_for_testing<USD>(10000 * 100000000, test_scenario::ctx(&mut test)),
-                account_cap_user
-            );
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                5 * FLOAT_SCALING,
-                200 * 100000000,
-                true,
-                TIMESTAMP_INF,
-                0,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                4 * FLOAT_SCALING,
-                200 * 100000000,
-                true,
-                TIMESTAMP_INF,
-                0,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                4 * FLOAT_SCALING,
-                200 * 100000000,
-                true,
-                TIMESTAMP_INF,
-                0,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                10 * FLOAT_SCALING,
-                1000 * 100000000,
-                false,
-                TIMESTAMP_INF,
-                0,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            let (next_bid_order_id, next_ask_order_id, _, _) = get_pool_stat(&pool);
-            assert!(next_bid_order_id == order_id(3, true), 0);
-            assert!(next_ask_order_id == order_id(1, false), 0);
-            custodian::assert_user_balance<USD>(
-                &pool.quote_custodian,
-                account_cap_user,
-                7400 * 100000000,
-                2600 * 100000000
-            );
-            custodian::assert_user_balance<SUI>(&pool.base_custodian, account_cap_user, 0, 1000 * 100000000);
-            test_scenario::return_shared(pool);
-            test_scenario::return_shared(clock);
-            test_scenario::return_to_address<AccountCap>(alice, account_cap);
-        };
-
-        test_scenario::next_tx(&mut test, bob);
-        {
-            let pool = test_scenario::take_shared<Pool<SUI, USD>>(&mut test);
-            let clock = test_scenario::take_shared<Clock>(&test);
-            let account_cap = test_scenario::take_from_address<AccountCap>(&test, bob);
-            let account_cap_user = object::id(&account_cap);
-            custodian::deposit(
-                &mut pool.base_custodian,
-                mint_for_testing<SUI>(900 * 100000000, test_scenario::ctx(&mut test)),
-                account_cap_user
-            );
-            custodian::assert_user_balance<SUI>(&pool.base_custodian, account_cap_user, 900 * 100000000, 0);
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                4 * FLOAT_SCALING,
-                601 * 100000000,
-                false,
-                TIMESTAMP_INF,
-                FILL_OR_KILL,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            custodian::assert_user_balance<USD>(&pool.quote_custodian, account_cap_user, 900 * 100000000, 0);
-            test_scenario::return_shared(pool);
-            test_scenario::return_shared(clock);
-            test_scenario::return_to_address<AccountCap>(bob, account_cap);
-        };
-        test_scenario::end(test);
-    }
-
-    #[test]
-    #[expected_failure(abort_code = EOrderCannotBeFullyPassive)]
-    fun test_place_limit_order_with_restrictions_E_ORDER_CANNOT_BE_FULLY_PASSIVE_() {
-        let owner: address = @0xAAAA;
-        let alice: address = @0xBBBB;
-        let bob: address = @0xCCCC;
-        let test = test_scenario::begin(owner);
-        test_scenario::next_tx(&mut test, owner);
-        {
-            setup_test(0, 0, &mut test, owner);
-        };
-        test_scenario::next_tx(&mut test, owner);
-        {
-            mint_account_cap_transfer(
-                alice,
-                test_scenario::ctx(&mut test)
-            );
-            mint_account_cap_transfer(
-                bob,
-                test_scenario::ctx(&mut test)
-            );
-        };
-        test_scenario::next_tx(&mut test, alice);
-        {
-            let pool = test_scenario::take_shared<Pool<SUI, USD>>(&mut test);
-            let clock = test_scenario::take_shared<Clock>(&test);
-            let account_cap = test_scenario::take_from_address<AccountCap>(&test, alice);
-            let account_cap_user = object::id(&account_cap);
-            custodian::deposit(
-                &mut pool.base_custodian,
-                mint_for_testing<SUI>(1000 * 100000000, test_scenario::ctx(&mut test)),
-                account_cap_user
-            );
-            custodian::deposit(
-                &mut pool.quote_custodian,
-                mint_for_testing<USD>(10000 * 100000000, test_scenario::ctx(&mut test)),
-                account_cap_user
-            );
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                5 * FLOAT_SCALING,
-                200 * 100000000,
-                true,
-                TIMESTAMP_INF,
-                0,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                4 * FLOAT_SCALING,
-                200 * 100000000,
-                true,
-                TIMESTAMP_INF,
-                0,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                4 * FLOAT_SCALING,
-                200 * 100000000,
-                true,
-                TIMESTAMP_INF,
-                0,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                10 * FLOAT_SCALING,
-                1000 * 100000000,
-                false,
-                TIMESTAMP_INF,
-                0,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            let (next_bid_order_id, next_ask_order_id, _, _) = get_pool_stat(&pool);
-            assert!(next_bid_order_id == order_id(3, true), 0);
-            assert!(next_ask_order_id == order_id(1, false), 0);
-            custodian::assert_user_balance<USD>(
-                &pool.quote_custodian,
-                account_cap_user,
-                7400 * 100000000,
-                2600 * 100000000
-            );
-            custodian::assert_user_balance<SUI>(&pool.base_custodian, account_cap_user, 0, 1000 * 100000000);
-            test_scenario::return_shared(pool);
-            test_scenario::return_shared(clock);
-            test_scenario::return_to_address<AccountCap>(alice, account_cap);
-        };
-
-        test_scenario::next_tx(&mut test, bob);
-        {
-            let pool = test_scenario::take_shared<Pool<SUI, USD>>(&mut test);
-            let clock = test_scenario::take_shared<Clock>(&test);
-            let account_cap = test_scenario::take_from_address<AccountCap>(&test, bob);
-            let account_cap_user = object::id(&account_cap);
-            custodian::deposit(
-                &mut pool.base_custodian,
-                mint_for_testing<SUI>(900 * 100000000, test_scenario::ctx(&mut test)),
-                account_cap_user
-            );
-            custodian::assert_user_balance<SUI>(&pool.base_custodian, account_cap_user, 900 * 100000000, 0);
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                4 * FLOAT_SCALING,
-                601 * 100000000,
-                false,
-                TIMESTAMP_INF,
-                POST_OR_ABORT,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            custodian::assert_user_balance<SUI>(&pool.base_custodian, account_cap_user, 900 * 100000000, 0);
-            test_scenario::return_shared(pool);
-            test_scenario::return_shared(clock);
-            test_scenario::return_to_address<AccountCap>(bob, account_cap);
-        };
-        test_scenario::end(test);
-    }
-
-    #[test]
-    fun test_place_limit_order_with_restrictions_IMMEDIATE_OR_CANCEL() {
-        let owner: address = @0xAAAA;
-        let alice: address = @0xBBBB;
-        let bob: address = @0xCCCC;
-        let test = test_scenario::begin(owner);
-        test_scenario::next_tx(&mut test, owner);
-        {
-            setup_test(0, 0, &mut test, owner);
-        };
-        test_scenario::next_tx(&mut test, owner);
-        {
-            mint_account_cap_transfer(
-                alice,
-                test_scenario::ctx(&mut test)
-            );
-            mint_account_cap_transfer(
-                bob,
-                test_scenario::ctx(&mut test)
-            );
-        };
-        test_scenario::next_tx(&mut test, alice);
-        {
-            let pool = test_scenario::take_shared<Pool<SUI, USD>>(&mut test);
-            let clock = test_scenario::take_shared<Clock>(&test);
-            let account_cap = test_scenario::take_from_address<AccountCap>(&test, alice);
-            let account_cap_user = object::id(&account_cap);
-            custodian::deposit(
-                &mut pool.base_custodian,
-                mint_for_testing<SUI>(1000 * 100000000, test_scenario::ctx(&mut test)),
-                account_cap_user
-            );
-            custodian::deposit(
-                &mut pool.quote_custodian,
-                mint_for_testing<USD>(10000 * 100000000, test_scenario::ctx(&mut test)),
-                account_cap_user
-            );
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                5 * FLOAT_SCALING,
-                200 * 100000000,
-                true,
-                TIMESTAMP_INF,
-                0,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                4 * FLOAT_SCALING,
-                200 * 100000000,
-                true,
-                TIMESTAMP_INF,
-                0,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            place_limit_order<SUI, USD>(
-                &mut pool,
-                4 * FLOAT_SCALING,
-                200 * 100000000,
-                true,
-                TIMESTAMP_INF,
-                0,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-
-            let (base_filled, quote_filled, maker_injected, maker_order_id) = place_limit_order<SUI, USD>(
-                &mut pool,
-                10 * FLOAT_SCALING,
-                1000 * 100000000,
-                false,
-                TIMESTAMP_INF,
-                0,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            assert!(base_filled == 0, E_NULL);
-            assert!(quote_filled == 0, E_NULL);
-            assert!(maker_injected, E_NULL);
-            assert!(maker_order_id == order_id(0, false), E_NULL);
-
-            let (next_bid_order_id, next_ask_order_id, _, _) = get_pool_stat(&pool);
-            assert!(next_bid_order_id == order_id(3, true), 0);
-            assert!(next_ask_order_id == order_id(1, false), 0);
-            custodian::assert_user_balance<USD>(
-                &pool.quote_custodian,
-                account_cap_user,
-                7400 * 100000000,
-                2600 * 100000000
-            );
-            custodian::assert_user_balance<SUI>(&pool.base_custodian, account_cap_user, 0, 1000 * 100000000);
-            test_scenario::return_shared(pool);
-            test_scenario::return_shared(clock);
-            test_scenario::return_to_address<AccountCap>(alice, account_cap);
-        };
-
-        test_scenario::next_tx(&mut test, bob);
-        {
-            let pool = test_scenario::take_shared<Pool<SUI, USD>>(&mut test);
-            let clock = test_scenario::take_shared<Clock>(&test);
-            let account_cap = test_scenario::take_from_address<AccountCap>(&test, bob);
-            let account_cap_user = object::id(&account_cap);
-            custodian::deposit(
-                &mut pool.base_custodian,
-                mint_for_testing<SUI>(900 * 100000000, test_scenario::ctx(&mut test)),
-                account_cap_user
-            );
-            custodian::assert_user_balance<SUI>(&pool.base_custodian, account_cap_user, 900 * 100000000, 0);
-
-            let (base_filled, quote_filled, maker_injected, _) = place_limit_order<SUI, USD>(
-                &mut pool,
-                4 * FLOAT_SCALING,
-                800 * 100000000,
-                false,
-                TIMESTAMP_INF,
-                IMMEDIATE_OR_CANCEL,
-                &clock,
-                &account_cap,
-                test_scenario::ctx(&mut test)
-            );
-            assert!(base_filled == 600 * 100000000, E_NULL);
-            assert!(quote_filled == 2600 * 100000000, E_NULL);
-            assert!(!maker_injected, E_NULL);
-
-            custodian::assert_user_balance<SUI>(&pool.base_custodian, account_cap_user, 300 * 100000000, 0);
-            {
-                let (_, _, bids, _) = get_pool_stat(&pool);
-                check_empty_tick_level(bids, 4 * FLOAT_SCALING);
-            };
-            test_scenario::return_shared(pool);
-            test_scenario::return_shared(clock);
-            test_scenario::return_to_address<AccountCap>(bob, account_cap);
-        };
-        test_scenario::end(test);
-    }
-
-    #[test]
-    #[expected_failure(abort_code = EInvalidPair)]
-    fun test_create_pool_invalid_pair() {
-        let owner: address = @0xAAAA;
-        let test = test_scenario::begin(owner);
-        test_scenario::next_tx(&mut test, owner);
-        {
-            setup_test(0, 0, &mut test, owner);
-        };
-        // create pool which is already exist fail
-        test_scenario::next_tx(&mut test, owner);
-        {
-            create_pool_<SUI, SUI>(
-                REFERENCE_TAKER_FEE_RATE,
-                REFERENCE_MAKER_REBATE_RATE,
-                1 * FLOAT_SCALING,
-                1,
-                balance::create_for_testing(FEE_AMOUNT_FOR_CREATE_POOL),
-                test_scenario::ctx(&mut test)
-            );
-        };
-        test_scenario::end(test);
-    }
-
-    #[test]
-    #[expected_failure(abort_code = EInvalidTickSizeLotSize)]
-    fun test_create_pool_invalid_tick_size_lot_size() {
-        let owner: address = @0xAAAA;
-        let test = test_scenario::begin(owner);
-        test_scenario::next_tx(&mut test, owner);
-        {
-            setup_test(0, 0, &mut test, owner);
-        };
-        // create pool which is already exist fail
-        test_scenario::next_tx(&mut test, owner);
-        {
-            create_pool_<SUI, SUI>(
-                REFERENCE_TAKER_FEE_RATE,
-                REFERENCE_MAKER_REBATE_RATE,
-                100_000,
-                5,
-                balance::create_for_testing(FEE_AMOUNT_FOR_CREATE_POOL),
-            test_scenario::ctx(&mut test)
-            );
-        };
-        test_scenario::end(test);
-    }
-
     // === Deprecated ===
+    #[allow(unused_field)]
     /// Deprecated since v1.0.0, use `OrderPlacedV2` instead.
     struct OrderPlaced<phantom BaseAsset, phantom QuoteAsset> has copy, store, drop {
         /// object ID of the pool the order was placed on
@@ -2181,6 +1684,7 @@ module deepbook::clob {
         price: u64,
     }
 
+    #[allow(unused_field)]
     /// Deprecated since v1.0.0, use `OrderFilledV2` instead.
     struct OrderFilled<phantom BaseAsset, phantom QuoteAsset> has copy, store, drop {
         /// object ID of the pool the order was placed on

@@ -10,8 +10,9 @@ use sui_json_rpc::api::{
 };
 use sui_json_rpc::SuiRpcModule;
 use sui_json_rpc_types::{
-    AddressMetrics, CheckpointedObjectID, EpochInfo, EpochPage, MoveCallMetrics, NetworkMetrics,
-    Page, QueryObjectsPage, SuiObjectDataFilter, SuiObjectResponse, SuiObjectResponseQuery,
+    AddressMetrics, CheckpointedObjectID, EpochInfo, EpochMetricsPage, EpochPage, MoveCallMetrics,
+    NetworkMetrics, Page, QueryObjectsPage, SuiObjectDataFilter, SuiObjectResponse,
+    SuiObjectResponseQuery,
 };
 use sui_open_rpc::Module;
 use sui_types::sui_serde::BigInt;
@@ -43,7 +44,9 @@ impl<S: IndexerStore> ExtendedApi<S> {
         {
             cp
         } else {
-            self.state.get_latest_checkpoint_sequence_number().await? as u64
+            self.state
+                .get_latest_tx_checkpoint_sequence_number()
+                .await? as u64
         };
 
         let object_cursor = cursor.as_ref().map(|c| c.object_id);
@@ -107,6 +110,15 @@ impl<S: IndexerStore + Sync + Send + 'static> ExtendedApiServer for ExtendedApi<
         })
     }
 
+    async fn get_epoch_metrics(
+        &self,
+        _cursor: Option<BigInt<u64>>,
+        _limit: Option<usize>,
+        _descending_order: Option<bool>,
+    ) -> RpcResult<EpochMetricsPage> {
+        unimplemented!();
+    }
+
     async fn get_current_epoch(&self) -> RpcResult<EpochInfo> {
         Ok(self.state.get_current_epoch().await?)
     }
@@ -139,6 +151,33 @@ impl<S: IndexerStore + Sync + Send + 'static> ExtendedApiServer for ExtendedApi<
             .get_checkpoint_address_stats(checkpoint as i64)
             .await?;
         Ok(AddressMetrics::from(address_stats))
+    }
+
+    async fn get_all_epoch_address_metrics(
+        &self,
+        descending_order: Option<bool>,
+    ) -> RpcResult<Vec<AddressMetrics>> {
+        let epoch_address_stats = self
+            .state
+            .get_all_epoch_address_stats(descending_order)
+            .await?;
+        Ok(epoch_address_stats
+            .into_iter()
+            .map(AddressMetrics::from)
+            .collect())
+    }
+
+    async fn get_total_transactions(&self) -> RpcResult<BigInt<u64>> {
+        let latest_cp_metrics = self.state.get_latest_checkpoint_metrics().await?;
+        // NOTE: tx are counted as:
+        // - if a tx is successful, it is counted as # of commands in the tx
+        // - otherwise, it is counted as 1.
+        let total_txes = latest_cp_metrics.rolling_total_successful_transactions
+            + latest_cp_metrics.rolling_total_transaction_blocks
+            - latest_cp_metrics.rolling_total_successful_transaction_blocks;
+        // NOTE: no underflow b/c rolling_total_transaction_blocks is greater than or equal to
+        // rolling_total_successful_transaction_blocks.
+        Ok((total_txes as u64).into())
     }
 }
 

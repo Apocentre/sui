@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+#[allow(unused_const)]
 module sui_system::validator {
     use std::ascii;
     use std::vector;
@@ -14,6 +15,7 @@ module sui_system::validator {
     use std::option::{Option, Self};
     use sui_system::staking_pool::{Self, PoolTokenExchangeRate, StakedSui, StakingPool};
     use std::string::{Self, String};
+    use sui::transfer;
     use sui::url::Url;
     use sui::url;
     use sui::event;
@@ -302,12 +304,12 @@ module sui_system::validator {
         stake: Balance<SUI>,
         staker_address: address,
         ctx: &mut TxContext,
-    ) {
+    ) : StakedSui {
         let stake_amount = balance::value(&stake);
         assert!(stake_amount > 0, EInvalidStakeAmount);
         let stake_epoch = tx_context::epoch(ctx) + 1;
-        staking_pool::request_add_stake(
-            &mut self.staking_pool, stake, staker_address, stake_epoch, ctx
+        let staked_sui = staking_pool::request_add_stake(
+            &mut self.staking_pool, stake, stake_epoch, ctx
         );
         // Process stake right away if staking pool is preactive.
         if (staking_pool::is_preactive(&self.staking_pool)) {
@@ -323,6 +325,7 @@ module sui_system::validator {
                 amount: stake_amount,
             }
         );
+        staked_sui
     }
 
     /// Request to add stake to the validator's staking pool at genesis
@@ -336,13 +339,14 @@ module sui_system::validator {
         let stake_amount = balance::value(&stake);
         assert!(stake_amount > 0, EInvalidStakeAmount);
 
-        staking_pool::request_add_stake(
+        let staked_sui = staking_pool::request_add_stake(
             &mut self.staking_pool,
             stake,
-            staker_address,
             0, // epoch 0 -- genesis
             ctx
         );
+
+        transfer::public_transfer(staked_sui, staker_address);
 
         // Process stake right away
         staking_pool::process_pending_stake(&mut self.staking_pool);
@@ -353,12 +357,13 @@ module sui_system::validator {
     public(friend) fun request_withdraw_stake(
         self: &mut Validator,
         staked_sui: StakedSui,
-        ctx: &mut TxContext,
-    ) {
+        ctx: &TxContext,
+    ) : Balance<SUI> {
         let principal_amount = staking_pool::staked_sui_amount(&staked_sui);
         let stake_activation_epoch = staking_pool::stake_activation_epoch(&staked_sui);
-        let withdraw_amount = staking_pool::request_withdraw_stake(
+        let withdrawn_stake = staking_pool::request_withdraw_stake(
                 &mut self.staking_pool, staked_sui, ctx);
+        let withdraw_amount = balance::value(&withdrawn_stake);
         let reward_amount = withdraw_amount - principal_amount;
         self.next_epoch_stake = self.next_epoch_stake - withdraw_amount;
         event::emit(
@@ -371,7 +376,8 @@ module sui_system::validator {
                 principal_amount,
                 reward_amount,
             }
-        )
+        );
+        withdrawn_stake
     }
 
     /// Request to set new gas price for the next epoch.
@@ -421,7 +427,7 @@ module sui_system::validator {
     }
 
     /// Process pending stakes and withdraws, called at the end of the epoch.
-    public(friend) fun process_pending_stakes_and_withdraws(self: &mut Validator, ctx: &mut TxContext) {
+    public(friend) fun process_pending_stakes_and_withdraws(self: &mut Validator, ctx: &TxContext) {
         staking_pool::process_pending_stakes_and_withdraws(&mut self.staking_pool, ctx);
         assert!(stake_amount(self) == self.next_epoch_stake, EInvalidStakeAmount);
     }
@@ -873,8 +879,7 @@ module sui_system::validator {
         // TODO: specify actual function behavior
      }
 
-    #[test_only]
-    public fun get_staking_pool_ref(self: &Validator) : &StakingPool {
+    public(friend) fun get_staking_pool_ref(self: &Validator) : &StakingPool {
         &self.staking_pool
     }
 

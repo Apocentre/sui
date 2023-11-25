@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use clap::Parser;
-use move_cli::base::{self, build};
+use move_cli::base;
 use move_package::BuildConfig as MoveBuildConfig;
 use serde_json::json;
 use std::{fs, path::PathBuf};
@@ -12,16 +12,12 @@ const LAYOUTS_DIR: &str = "layouts";
 const STRUCT_LAYOUTS_FILENAME: &str = "struct_layouts.yaml";
 
 #[derive(Parser)]
+#[group(id = "sui-move-build")]
 pub struct Build {
-    #[clap(flatten)]
-    pub build: build::Build,
     /// Include the contents of packages in dependencies that haven't been published (only relevant
     /// when dumping bytecode as base64)
     #[clap(long, global = true)]
     pub with_unpublished_dependencies: bool,
-    /// Use the legacy digest calculation algorithm
-    #[clap(long)]
-    legacy_digest: bool,
     /// Whether we are printing in base64.
     #[clap(long, global = true)]
     pub dump_bytecode_as_base64: bool,
@@ -32,6 +28,9 @@ pub struct Build {
     /// and events.
     #[clap(long, global = true)]
     pub generate_struct_layouts: bool,
+    /// If `true`, disable linters
+    #[clap(long, global = true)]
+    pub no_lint: bool,
 }
 
 impl Build {
@@ -46,9 +45,9 @@ impl Build {
             rerooted_path,
             build_config,
             self.with_unpublished_dependencies,
-            self.legacy_digest,
             self.dump_bytecode_as_base64,
             self.generate_struct_layouts,
+            !self.no_lint,
         )
     }
 
@@ -56,14 +55,15 @@ impl Build {
         rerooted_path: PathBuf,
         config: MoveBuildConfig,
         with_unpublished_deps: bool,
-        legacy_digest: bool,
         dump_bytecode_as_base64: bool,
         generate_struct_layouts: bool,
+        lint: bool,
     ) -> anyhow::Result<()> {
         let pkg = BuildConfig {
             config,
             run_bytecode_verifier: true,
             print_diags_to_stderr: true,
+            lint,
         }
         .build(rerooted_path)?;
         if dump_bytecode_as_base64 {
@@ -78,7 +78,7 @@ impl Build {
                 json!({
                     "modules": pkg.get_package_base64(with_unpublished_deps),
                     "dependencies": json!(package_dependencies),
-                    "digest": pkg.get_package_digest(with_unpublished_deps, !legacy_digest),
+                    "digest": pkg.get_package_digest(with_unpublished_deps),
                 })
             )
         }

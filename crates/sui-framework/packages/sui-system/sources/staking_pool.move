@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+#[allow(unused_const)]
 module sui_system::staking_pool {
     use sui::balance::{Self, Balance};
     use sui::sui::SUI;
@@ -8,7 +9,6 @@ module sui_system::staking_pool {
     use sui::tx_context::{Self, TxContext};
     use sui::transfer;
     use sui::object::{Self, ID, UID};
-    use sui::coin;
     use sui::math;
     use sui::table::{Self, Table};
     use sui::bag::Bag;
@@ -78,7 +78,7 @@ module sui_system::staking_pool {
     }
 
     /// A self-custodial object holding the staked SUI tokens.
-    struct StakedSui has key {
+    struct StakedSui has key, store {
         id: UID,
         /// ID of the staking pool we are staking with.
         pool_id: ID,
@@ -114,10 +114,9 @@ module sui_system::staking_pool {
     public(friend) fun request_add_stake(
         pool: &mut StakingPool,
         stake: Balance<SUI>,
-        staker: address,
         stake_activation_epoch: u64,
         ctx: &mut TxContext
-    ) {
+    ) : StakedSui {
         let sui_amount = balance::value(&stake);
         assert!(!is_inactive(pool), EDelegationToInactivePool);
         assert!(sui_amount > 0, EDelegationOfZeroSui);
@@ -128,20 +127,19 @@ module sui_system::staking_pool {
             principal: stake,
         };
         pool.pending_stake = pool.pending_stake + sui_amount;
-        transfer::transfer(staked_sui, staker);
+        staked_sui
     }
 
     /// Request to withdraw the given stake plus rewards from a staking pool.
-    /// Both the principal and corresponding rewards in SUI are withdrawn and transferred to the staker.
+    /// Both the principal and corresponding rewards in SUI are withdrawn.
     /// A proportional amount of pool token withdraw is recorded and processed at epoch change time.
     public(friend) fun request_withdraw_stake(
         pool: &mut StakingPool,
         staked_sui: StakedSui,
-        ctx: &mut TxContext
-    ) : u64 {
+        ctx: &TxContext
+    ) : Balance<SUI> {
         let (pool_token_withdraw_amount, principal_withdraw) =
             withdraw_from_principal(pool, staked_sui);
-        let staker = tx_context::sender(ctx);
         let principal_withdraw_amount = balance::value(&principal_withdraw);
 
         let rewards_withdraw = withdraw_rewards(
@@ -157,15 +155,14 @@ module sui_system::staking_pool {
 
         // TODO: implement withdraw bonding period here.
         balance::join(&mut principal_withdraw, rewards_withdraw);
-        transfer::public_transfer(coin::from_balance(principal_withdraw, ctx), staker);
-        total_sui_withdraw_amount
+        principal_withdraw
     }
 
     /// Withdraw the principal SUI stored in the StakedSui object, and calculate the corresponding amount of pool
     /// tokens using exchange rate at staking epoch.
     /// Returns values are amount of pool tokens withdrawn and withdrawn principal portion of SUI.
     public(friend) fun withdraw_from_principal(
-        pool: &mut StakingPool,
+        pool: &StakingPool,
         staked_sui: StakedSui,
     ) : (u64, Balance<SUI>) {
 
@@ -201,7 +198,7 @@ module sui_system::staking_pool {
         balance::join(&mut pool.rewards_pool, rewards);
     }
 
-    public(friend) fun process_pending_stakes_and_withdraws(pool: &mut StakingPool, ctx: &mut TxContext) {
+    public(friend) fun process_pending_stakes_and_withdraws(pool: &mut StakingPool, ctx: &TxContext) {
         let new_epoch = tx_context::epoch(ctx) + 1;
         process_pending_stake_withdraw(pool);
         process_pending_stake(pool);
@@ -273,30 +270,6 @@ module sui_system::staking_pool {
         assert!(!is_inactive(pool), EActivationOfInactivePool);
         // Fill in the active epoch.
         option::fill(&mut pool.activation_epoch, activation_epoch);
-    }
-
-    /// Withdraw stake from a preactive staking pool.
-    public(friend) fun request_withdraw_stake_preactive(
-        pool: &mut StakingPool,
-        staked_sui: StakedSui,
-        ctx: &mut TxContext
-    ) : u64 {
-        // Check that the stake information matches the pool.
-        assert!(staked_sui.pool_id == object::id(pool), EWrongPool);
-
-        assert!(is_preactive(pool), EPoolNotPreactive);
-
-        let staker = tx_context::sender(ctx);
-
-        let principal = unwrap_staked_sui(staked_sui);
-        let withdraw_amount = balance::value(&principal);
-        // The exchange rate is always 1:1 for a preactive pool so we decrement the
-        // same amount for both sui_balance and pool_token_balance.
-        pool.sui_balance = pool.sui_balance - withdraw_amount;
-        pool.pool_token_balance = pool.pool_token_balance - withdraw_amount;
-
-        transfer::public_transfer(coin::from_balance(principal, ctx), staker);
-        withdraw_amount
     }
 
     // ==== inactive pool related ====
@@ -406,6 +379,18 @@ module sui_system::staking_pool {
     /// Returns the total withdrawal from the staking pool this epoch.
     public fun pending_stake_withdraw_amount(staking_pool: &StakingPool): u64 {
         staking_pool.pending_total_sui_withdraw
+    }
+
+    public(friend) fun exchange_rates(pool: &StakingPool): &Table<u64, PoolTokenExchangeRate> {
+        &pool.exchange_rates
+    }
+
+    public fun sui_amount(exchange_rate: &PoolTokenExchangeRate): u64 {
+        exchange_rate.sui_amount
+    }
+
+    public fun pool_token_amount(exchange_rate: &PoolTokenExchangeRate): u64 {
+        exchange_rate.pool_token_amount
     }
 
     /// Returns true if the provided staking pool is preactive at the provided epoch.

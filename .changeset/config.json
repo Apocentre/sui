@@ -12,8 +12,10 @@
     "sui-wallet",
     "sui-explorer",
     "@mysten/core",
+    "@mysten/ui",
     "sui-wallet-adapter-demo",
-    "wallet-kit-site",
-    "sponsored-transactions"
+    "sponsored-transactions",
+    "kiosk-demo",
+    "kiosk-cli"
   ]
 }

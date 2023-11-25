@@ -1,10 +1,10 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
-use axum::{http::StatusCode, routing::get, Extension, Router};
+use axum::{routing::get, Extension, Router};
 use config::{AuthorityIdentifier, WorkerId};
-use mysten_metrics::spawn_logged_monitored_task;
-use mysten_network::multiaddr::{to_socket_addr, Multiaddr};
-use prometheus::{Registry, TextEncoder};
+use mysten_metrics::{metrics, spawn_logged_monitored_task};
+use mysten_network::multiaddr::Multiaddr;
+use prometheus::Registry;
 use std::collections::HashMap;
 use tokio::task::JoinHandle;
 
@@ -37,7 +37,9 @@ pub fn start_prometheus_server(addr: Multiaddr, registry: &Registry) -> JoinHand
         .route(METRICS_ROUTE, get(metrics))
         .layer(Extension(registry.clone()));
 
-    let socket_addr = to_socket_addr(&addr).expect("failed to convert Multiaddr to SocketAddr");
+    let socket_addr = addr
+        .to_socket_addr()
+        .expect("failed to convert Multiaddr to SocketAddr");
 
     spawn_logged_monitored_task!(
         async move {
@@ -48,15 +50,4 @@ pub fn start_prometheus_server(addr: Multiaddr, registry: &Registry) -> JoinHand
         },
         "MetricsServerTask"
     )
-}
-
-async fn metrics(registry: Extension<Registry>) -> (StatusCode, String) {
-    let metrics_families = registry.gather();
-    match TextEncoder.encode_to_string(&metrics_families) {
-        Ok(metrics) => (StatusCode::OK, metrics),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("unable to encode metrics: {error}"),
-        ),
-    }
 }

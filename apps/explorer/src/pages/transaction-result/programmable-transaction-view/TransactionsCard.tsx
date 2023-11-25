@@ -1,48 +1,39 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { type SuiTransaction } from '@mysten/sui.js';
+import { type SuiTransaction } from '@mysten/sui.js/client';
 
 import { Transaction } from './Transaction';
-
 import { ProgrammableTxnBlockCard } from '~/components/transactions/ProgTxnBlockCard';
-import { TransactionBlockCardSection } from '~/ui/TransactionBlockCard';
-
-const DEFAULT_ITEMS_TO_SHOW = 5;
+import { CollapsibleSection } from '~/ui/collapsible/CollapsibleSection';
 
 interface TransactionsCardProps {
-    transactions: SuiTransaction[];
+	transactions: SuiTransaction[];
 }
 
 export function TransactionsCard({ transactions }: TransactionsCardProps) {
-    const defaultOpen = transactions.length < DEFAULT_ITEMS_TO_SHOW;
+	if (!transactions?.length) {
+		return null;
+	}
 
-    if (!transactions?.length) {
-        return null;
-    }
+	const expandableItems = transactions.map((transaction, index) => {
+		const [[type, data]] = Object.entries(transaction);
 
-    const expandableItems = transactions.map((transaction, index) => {
-        const [[type, data]] = Object.entries(transaction);
+		return (
+			<CollapsibleSection defaultOpen key={index} title={type}>
+				<div data-testid="transactions-card-content">
+					<Transaction key={index} type={type} data={data} />
+				</div>
+			</CollapsibleSection>
+		);
+	});
 
-        return (
-            <TransactionBlockCardSection
-                key={index}
-                title={type}
-                defaultOpen={defaultOpen}
-            >
-                <div data-testid="transactions-card-content">
-                    <Transaction key={index} type={type} data={data} />
-                </div>
-            </TransactionBlockCardSection>
-        );
-    });
-
-    return (
-        <ProgrammableTxnBlockCard
-            items={expandableItems}
-            itemsLabel="Transactions"
-            defaultItemsToShow={DEFAULT_ITEMS_TO_SHOW}
-            noExpandableList={defaultOpen}
-        />
-    );
+	return (
+		<ProgrammableTxnBlockCard
+			initialClose
+			items={expandableItems}
+			itemsLabel={transactions.length > 1 ? 'Transactions' : 'Transaction'}
+			count={transactions.length}
+		/>
+	);
 }

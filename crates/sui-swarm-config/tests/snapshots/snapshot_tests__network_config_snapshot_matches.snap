@@ -1,5 +1,5 @@
 ---
-source: crates/sui-config/tests/snapshot_tests.rs
+source: crates/sui-swarm-config/tests/snapshot_tests.rs
 expression: network_config
 ---
 validator_configs:
@@ -14,6 +14,7 @@ validator_configs:
     db-path: /tmp/foo/
     network-address: ""
     json-rpc-address: "0.0.0.0:1"
+    enable-experimental-rest-api: true
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
@@ -26,23 +27,13 @@ validator_configs:
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
-        max_header_delay: 2000ms
+        max_header_delay: 1000ms
         min_header_delay: 500ms
         gc_depth: 50
         sync_retry_delay: 5000ms
         sync_retry_nodes: 3
         batch_size: 5000000
         max_batch_delay: 100ms
-        block_synchronizer:
-          range_synchronize_timeout: 30000ms
-          certificates_synchronize_timeout: 30000ms
-          payload_synchronize_timeout: 30000ms
-          payload_availability_timeout: 30000ms
-          handler_certificate_deliver_timeout: 30000ms
-        consensus_api_grpc:
-          socket_addr: ""
-          get_collections_timeout: 5000ms
-          remove_collections_timeout: 5000ms
         max_concurrent_requests: 500000
         prometheus_metrics:
           socket_addr: /ip4/127.0.0.1/tcp/1234
@@ -51,10 +42,8 @@ validator_configs:
           worker_network_admin_server_base_port: 8765
         anemo:
           send_certificate_rate_limit: ~
-          get_payload_availability_rate_limit: ~
-          get_certificates_rate_limit: ~
           report_batch_rate_limit: ~
-          request_batch_rate_limit: ~
+          request_batches_rate_limit: ~
     enable-event-processing: false
     enable-index-processing: true
     grpc-load-shed: ~
@@ -69,7 +58,6 @@ validator_configs:
       num-epochs-to-retain: 2
       max-checkpoints-in-batch: 10
       max-transactions-in-batch: 1000
-      use-range-deletion: true
     end-of-epoch-broadcast-channel-capacity: 128
     checkpoint-executor-config:
       checkpoint-execution-max-concurrency: 200
@@ -78,19 +66,53 @@ validator_configs:
       perform-db-checkpoints-at-epoch-end: false
     indirect-objects-threshold: 18446744073709551615
     expensive-safety-check-config:
-      enable-epoch-sui-conservation-check: true
-      enable-deep-per-tx-sui-conservation-check: true
+      enable-epoch-sui-conservation-check: false
+      enable-deep-per-tx-sui-conservation-check: false
       force-disable-epoch-sui-conservation-check: false
-      enable-state-consistency-check: true
+      enable-state-consistency-check: false
       force-disable-state-consistency-check: false
-      enable-move-vm-paranoid-checks: true
+      enable-move-vm-paranoid-checks: false
+      enable-secondary-index-checks: false
     transaction-deny-config:
-      package_publish_disabled: false
-      package_upgrade_disabled: false
-      shared_object_disabled: false
-      user_transaction_disabled: false
+      package-publish-disabled: false
+      package-upgrade-disabled: false
+      shared-object-disabled: false
+      user-transaction-disabled: false
+      receiving-objects-disabled: false
+      zklogin-sig-disabled: false
+      zklogin-disabled-providers: []
     certificate-deny-config: {}
     state-debug-dump-config: {}
+    state-archive-write-config:
+      concurrency: 0
+      use-for-pruning-watermark: false
+    state-archive-read-config: []
+    state-snapshot-write-config:
+      concurrency: 0
+    indexer-max-subscriptions: ~
+    transaction-kv-store-read-config:
+      base-url: ""
+    jwk-fetch-interval-seconds: 3600
+    zklogin-oauth-providers:
+      Mainnet:
+        - Facebook
+        - Google
+        - Twitch
+      Testnet:
+        - Facebook
+        - Google
+        - Twitch
+      Unknown:
+        - Apple
+        - Facebook
+        - Google
+        - Kakao
+        - Slack
+        - Twitch
+    overload-threshold-config:
+      max_txn_age_in_queue:
+        secs: 1
+        nanos: 0
   - protocol-key-pair:
       value: avYcyVgYMXTyaUYh9IRwLK0gSzl7YF6ZQDAbrS1Bhvo=
     worker-key-pair:
@@ -102,6 +124,7 @@ validator_configs:
     db-path: /tmp/foo/
     network-address: ""
     json-rpc-address: "0.0.0.0:1"
+    enable-experimental-rest-api: true
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
@@ -114,23 +137,13 @@ validator_configs:
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
-        max_header_delay: 2000ms
+        max_header_delay: 1000ms
         min_header_delay: 500ms
         gc_depth: 50
         sync_retry_delay: 5000ms
         sync_retry_nodes: 3
         batch_size: 5000000
         max_batch_delay: 100ms
-        block_synchronizer:
-          range_synchronize_timeout: 30000ms
-          certificates_synchronize_timeout: 30000ms
-          payload_synchronize_timeout: 30000ms
-          payload_availability_timeout: 30000ms
-          handler_certificate_deliver_timeout: 30000ms
-        consensus_api_grpc:
-          socket_addr: ""
-          get_collections_timeout: 5000ms
-          remove_collections_timeout: 5000ms
         max_concurrent_requests: 500000
         prometheus_metrics:
           socket_addr: /ip4/127.0.0.1/tcp/1234
@@ -139,10 +152,8 @@ validator_configs:
           worker_network_admin_server_base_port: 8765
         anemo:
           send_certificate_rate_limit: ~
-          get_payload_availability_rate_limit: ~
-          get_certificates_rate_limit: ~
           report_batch_rate_limit: ~
-          request_batch_rate_limit: ~
+          request_batches_rate_limit: ~
     enable-event-processing: false
     enable-index-processing: true
     grpc-load-shed: ~
@@ -157,7 +168,6 @@ validator_configs:
       num-epochs-to-retain: 2
       max-checkpoints-in-batch: 10
       max-transactions-in-batch: 1000
-      use-range-deletion: true
     end-of-epoch-broadcast-channel-capacity: 128
     checkpoint-executor-config:
       checkpoint-execution-max-concurrency: 200
@@ -166,19 +176,53 @@ validator_configs:
       perform-db-checkpoints-at-epoch-end: false
     indirect-objects-threshold: 18446744073709551615
     expensive-safety-check-config:
-      enable-epoch-sui-conservation-check: true
-      enable-deep-per-tx-sui-conservation-check: true
+      enable-epoch-sui-conservation-check: false
+      enable-deep-per-tx-sui-conservation-check: false
       force-disable-epoch-sui-conservation-check: false
-      enable-state-consistency-check: true
+      enable-state-consistency-check: false
       force-disable-state-consistency-check: false
-      enable-move-vm-paranoid-checks: true
+      enable-move-vm-paranoid-checks: false
+      enable-secondary-index-checks: false
     transaction-deny-config:
-      package_publish_disabled: false
-      package_upgrade_disabled: false
-      shared_object_disabled: false
-      user_transaction_disabled: false
+      package-publish-disabled: false
+      package-upgrade-disabled: false
+      shared-object-disabled: false
+      user-transaction-disabled: false
+      receiving-objects-disabled: false
+      zklogin-sig-disabled: false
+      zklogin-disabled-providers: []
     certificate-deny-config: {}
     state-debug-dump-config: {}
+    state-archive-write-config:
+      concurrency: 0
+      use-for-pruning-watermark: false
+    state-archive-read-config: []
+    state-snapshot-write-config:
+      concurrency: 0
+    indexer-max-subscriptions: ~
+    transaction-kv-store-read-config:
+      base-url: ""
+    jwk-fetch-interval-seconds: 3600
+    zklogin-oauth-providers:
+      Mainnet:
+        - Facebook
+        - Google
+        - Twitch
+      Testnet:
+        - Facebook
+        - Google
+        - Twitch
+      Unknown:
+        - Apple
+        - Facebook
+        - Google
+        - Kakao
+        - Slack
+        - Twitch
+    overload-threshold-config:
+      max_txn_age_in_queue:
+        secs: 1
+        nanos: 0
   - protocol-key-pair:
       value: OXnx3yM1C/ppgnDMx/o1d49fJs7E05kq11mXNae/O+I=
     worker-key-pair:
@@ -190,6 +234,7 @@ validator_configs:
     db-path: /tmp/foo/
     network-address: ""
     json-rpc-address: "0.0.0.0:1"
+    enable-experimental-rest-api: true
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
@@ -202,23 +247,13 @@ validator_configs:
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
-        max_header_delay: 2000ms
+        max_header_delay: 1000ms
         min_header_delay: 500ms
         gc_depth: 50
         sync_retry_delay: 5000ms
         sync_retry_nodes: 3
         batch_size: 5000000
         max_batch_delay: 100ms
-        block_synchronizer:
-          range_synchronize_timeout: 30000ms
-          certificates_synchronize_timeout: 30000ms
-          payload_synchronize_timeout: 30000ms
-          payload_availability_timeout: 30000ms
-          handler_certificate_deliver_timeout: 30000ms
-        consensus_api_grpc:
-          socket_addr: ""
-          get_collections_timeout: 5000ms
-          remove_collections_timeout: 5000ms
         max_concurrent_requests: 500000
         prometheus_metrics:
           socket_addr: /ip4/127.0.0.1/tcp/1234
@@ -227,10 +262,8 @@ validator_configs:
           worker_network_admin_server_base_port: 8765
         anemo:
           send_certificate_rate_limit: ~
-          get_payload_availability_rate_limit: ~
-          get_certificates_rate_limit: ~
           report_batch_rate_limit: ~
-          request_batch_rate_limit: ~
+          request_batches_rate_limit: ~
     enable-event-processing: false
     enable-index-processing: true
     grpc-load-shed: ~
@@ -245,7 +278,6 @@ validator_configs:
       num-epochs-to-retain: 2
       max-checkpoints-in-batch: 10
       max-transactions-in-batch: 1000
-      use-range-deletion: true
     end-of-epoch-broadcast-channel-capacity: 128
     checkpoint-executor-config:
       checkpoint-execution-max-concurrency: 200
@@ -254,19 +286,53 @@ validator_configs:
       perform-db-checkpoints-at-epoch-end: false
     indirect-objects-threshold: 18446744073709551615
     expensive-safety-check-config:
-      enable-epoch-sui-conservation-check: true
-      enable-deep-per-tx-sui-conservation-check: true
+      enable-epoch-sui-conservation-check: false
+      enable-deep-per-tx-sui-conservation-check: false
       force-disable-epoch-sui-conservation-check: false
-      enable-state-consistency-check: true
+      enable-state-consistency-check: false
       force-disable-state-consistency-check: false
-      enable-move-vm-paranoid-checks: true
+      enable-move-vm-paranoid-checks: false
+      enable-secondary-index-checks: false
     transaction-deny-config:
-      package_publish_disabled: false
-      package_upgrade_disabled: false
-      shared_object_disabled: false
-      user_transaction_disabled: false
+      package-publish-disabled: false
+      package-upgrade-disabled: false
+      shared-object-disabled: false
+      user-transaction-disabled: false
+      receiving-objects-disabled: false
+      zklogin-sig-disabled: false
+      zklogin-disabled-providers: []
     certificate-deny-config: {}
     state-debug-dump-config: {}
+    state-archive-write-config:
+      concurrency: 0
+      use-for-pruning-watermark: false
+    state-archive-read-config: []
+    state-snapshot-write-config:
+      concurrency: 0
+    indexer-max-subscriptions: ~
+    transaction-kv-store-read-config:
+      base-url: ""
+    jwk-fetch-interval-seconds: 3600
+    zklogin-oauth-providers:
+      Mainnet:
+        - Facebook
+        - Google
+        - Twitch
+      Testnet:
+        - Facebook
+        - Google
+        - Twitch
+      Unknown:
+        - Apple
+        - Facebook
+        - Google
+        - Kakao
+        - Slack
+        - Twitch
+    overload-threshold-config:
+      max_txn_age_in_queue:
+        secs: 1
+        nanos: 0
   - protocol-key-pair:
       value: CyNkjqNVr3HrHTH7f/NLs7u5lUHJzuPAw0PqMTD2y2s=
     worker-key-pair:
@@ -278,6 +344,7 @@ validator_configs:
     db-path: /tmp/foo/
     network-address: ""
     json-rpc-address: "0.0.0.0:1"
+    enable-experimental-rest-api: true
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
@@ -290,23 +357,13 @@ validator_configs:
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
-        max_header_delay: 2000ms
+        max_header_delay: 1000ms
         min_header_delay: 500ms
         gc_depth: 50
         sync_retry_delay: 5000ms
         sync_retry_nodes: 3
         batch_size: 5000000
         max_batch_delay: 100ms
-        block_synchronizer:
-          range_synchronize_timeout: 30000ms
-          certificates_synchronize_timeout: 30000ms
-          payload_synchronize_timeout: 30000ms
-          payload_availability_timeout: 30000ms
-          handler_certificate_deliver_timeout: 30000ms
-        consensus_api_grpc:
-          socket_addr: ""
-          get_collections_timeout: 5000ms
-          remove_collections_timeout: 5000ms
         max_concurrent_requests: 500000
         prometheus_metrics:
           socket_addr: /ip4/127.0.0.1/tcp/1234
@@ -315,10 +372,8 @@ validator_configs:
           worker_network_admin_server_base_port: 8765
         anemo:
           send_certificate_rate_limit: ~
-          get_payload_availability_rate_limit: ~
-          get_certificates_rate_limit: ~
           report_batch_rate_limit: ~
-          request_batch_rate_limit: ~
+          request_batches_rate_limit: ~
     enable-event-processing: false
     enable-index-processing: true
     grpc-load-shed: ~
@@ -333,7 +388,6 @@ validator_configs:
       num-epochs-to-retain: 2
       max-checkpoints-in-batch: 10
       max-transactions-in-batch: 1000
-      use-range-deletion: true
     end-of-epoch-broadcast-channel-capacity: 128
     checkpoint-executor-config:
       checkpoint-execution-max-concurrency: 200
@@ -342,19 +396,53 @@ validator_configs:
       perform-db-checkpoints-at-epoch-end: false
     indirect-objects-threshold: 18446744073709551615
     expensive-safety-check-config:
-      enable-epoch-sui-conservation-check: true
-      enable-deep-per-tx-sui-conservation-check: true
+      enable-epoch-sui-conservation-check: false
+      enable-deep-per-tx-sui-conservation-check: false
       force-disable-epoch-sui-conservation-check: false
-      enable-state-consistency-check: true
+      enable-state-consistency-check: false
       force-disable-state-consistency-check: false
-      enable-move-vm-paranoid-checks: true
+      enable-move-vm-paranoid-checks: false
+      enable-secondary-index-checks: false
     transaction-deny-config:
-      package_publish_disabled: false
-      package_upgrade_disabled: false
-      shared_object_disabled: false
-      user_transaction_disabled: false
+      package-publish-disabled: false
+      package-upgrade-disabled: false
+      shared-object-disabled: false
+      user-transaction-disabled: false
+      receiving-objects-disabled: false
+      zklogin-sig-disabled: false
+      zklogin-disabled-providers: []
     certificate-deny-config: {}
     state-debug-dump-config: {}
+    state-archive-write-config:
+      concurrency: 0
+      use-for-pruning-watermark: false
+    state-archive-read-config: []
+    state-snapshot-write-config:
+      concurrency: 0
+    indexer-max-subscriptions: ~
+    transaction-kv-store-read-config:
+      base-url: ""
+    jwk-fetch-interval-seconds: 3600
+    zklogin-oauth-providers:
+      Mainnet:
+        - Facebook
+        - Google
+        - Twitch
+      Testnet:
+        - Facebook
+        - Google
+        - Twitch
+      Unknown:
+        - Apple
+        - Facebook
+        - Google
+        - Kakao
+        - Slack
+        - Twitch
+    overload-threshold-config:
+      max_txn_age_in_queue:
+        secs: 1
+        nanos: 0
   - protocol-key-pair:
       value: X/I/kM+KvHcxAKEf2UU6Sr7SpN3bhiE9nP5CuM/iIY0=
     worker-key-pair:
@@ -366,6 +454,7 @@ validator_configs:
     db-path: /tmp/foo/
     network-address: ""
     json-rpc-address: "0.0.0.0:1"
+    enable-experimental-rest-api: true
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
@@ -378,23 +467,13 @@ validator_configs:
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
-        max_header_delay: 2000ms
+        max_header_delay: 1000ms
         min_header_delay: 500ms
         gc_depth: 50
         sync_retry_delay: 5000ms
         sync_retry_nodes: 3
         batch_size: 5000000
         max_batch_delay: 100ms
-        block_synchronizer:
-          range_synchronize_timeout: 30000ms
-          certificates_synchronize_timeout: 30000ms
-          payload_synchronize_timeout: 30000ms
-          payload_availability_timeout: 30000ms
-          handler_certificate_deliver_timeout: 30000ms
-        consensus_api_grpc:
-          socket_addr: ""
-          get_collections_timeout: 5000ms
-          remove_collections_timeout: 5000ms
         max_concurrent_requests: 500000
         prometheus_metrics:
           socket_addr: /ip4/127.0.0.1/tcp/1234
@@ -403,10 +482,8 @@ validator_configs:
           worker_network_admin_server_base_port: 8765
         anemo:
           send_certificate_rate_limit: ~
-          get_payload_availability_rate_limit: ~
-          get_certificates_rate_limit: ~
           report_batch_rate_limit: ~
-          request_batch_rate_limit: ~
+          request_batches_rate_limit: ~
     enable-event-processing: false
     enable-index-processing: true
     grpc-load-shed: ~
@@ -421,7 +498,6 @@ validator_configs:
       num-epochs-to-retain: 2
       max-checkpoints-in-batch: 10
       max-transactions-in-batch: 1000
-      use-range-deletion: true
     end-of-epoch-broadcast-channel-capacity: 128
     checkpoint-executor-config:
       checkpoint-execution-max-concurrency: 200
@@ -430,19 +506,53 @@ validator_configs:
       perform-db-checkpoints-at-epoch-end: false
     indirect-objects-threshold: 18446744073709551615
     expensive-safety-check-config:
-      enable-epoch-sui-conservation-check: true
-      enable-deep-per-tx-sui-conservation-check: true
+      enable-epoch-sui-conservation-check: false
+      enable-deep-per-tx-sui-conservation-check: false
       force-disable-epoch-sui-conservation-check: false
-      enable-state-consistency-check: true
+      enable-state-consistency-check: false
       force-disable-state-consistency-check: false
-      enable-move-vm-paranoid-checks: true
+      enable-move-vm-paranoid-checks: false
+      enable-secondary-index-checks: false
     transaction-deny-config:
-      package_publish_disabled: false
-      package_upgrade_disabled: false
-      shared_object_disabled: false
-      user_transaction_disabled: false
+      package-publish-disabled: false
+      package-upgrade-disabled: false
+      shared-object-disabled: false
+      user-transaction-disabled: false
+      receiving-objects-disabled: false
+      zklogin-sig-disabled: false
+      zklogin-disabled-providers: []
     certificate-deny-config: {}
     state-debug-dump-config: {}
+    state-archive-write-config:
+      concurrency: 0
+      use-for-pruning-watermark: false
+    state-archive-read-config: []
+    state-snapshot-write-config:
+      concurrency: 0
+    indexer-max-subscriptions: ~
+    transaction-kv-store-read-config:
+      base-url: ""
+    jwk-fetch-interval-seconds: 3600
+    zklogin-oauth-providers:
+      Mainnet:
+        - Facebook
+        - Google
+        - Twitch
+      Testnet:
+        - Facebook
+        - Google
+        - Twitch
+      Unknown:
+        - Apple
+        - Facebook
+        - Google
+        - Kakao
+        - Slack
+        - Twitch
+    overload-threshold-config:
+      max_txn_age_in_queue:
+        secs: 1
+        nanos: 0
   - protocol-key-pair:
       value: N272EiFDyKtxRbDKbyN6ujenJ+skPcRoc/XolpOLGnU=
     worker-key-pair:
@@ -454,6 +564,7 @@ validator_configs:
     db-path: /tmp/foo/
     network-address: ""
     json-rpc-address: "0.0.0.0:1"
+    enable-experimental-rest-api: true
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
@@ -466,23 +577,13 @@ validator_configs:
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
-        max_header_delay: 2000ms
+        max_header_delay: 1000ms
         min_header_delay: 500ms
         gc_depth: 50
         sync_retry_delay: 5000ms
         sync_retry_nodes: 3
         batch_size: 5000000
         max_batch_delay: 100ms
-        block_synchronizer:
-          range_synchronize_timeout: 30000ms
-          certificates_synchronize_timeout: 30000ms
-          payload_synchronize_timeout: 30000ms
-          payload_availability_timeout: 30000ms
-          handler_certificate_deliver_timeout: 30000ms
-        consensus_api_grpc:
-          socket_addr: ""
-          get_collections_timeout: 5000ms
-          remove_collections_timeout: 5000ms
         max_concurrent_requests: 500000
         prometheus_metrics:
           socket_addr: /ip4/127.0.0.1/tcp/1234
@@ -491,10 +592,8 @@ validator_configs:
           worker_network_admin_server_base_port: 8765
         anemo:
           send_certificate_rate_limit: ~
-          get_payload_availability_rate_limit: ~
-          get_certificates_rate_limit: ~
           report_batch_rate_limit: ~
-          request_batch_rate_limit: ~
+          request_batches_rate_limit: ~
     enable-event-processing: false
     enable-index-processing: true
     grpc-load-shed: ~
@@ -509,7 +608,6 @@ validator_configs:
       num-epochs-to-retain: 2
       max-checkpoints-in-batch: 10
       max-transactions-in-batch: 1000
-      use-range-deletion: true
     end-of-epoch-broadcast-channel-capacity: 128
     checkpoint-executor-config:
       checkpoint-execution-max-concurrency: 200
@@ -518,19 +616,53 @@ validator_configs:
       perform-db-checkpoints-at-epoch-end: false
     indirect-objects-threshold: 18446744073709551615
     expensive-safety-check-config:
-      enable-epoch-sui-conservation-check: true
-      enable-deep-per-tx-sui-conservation-check: true
+      enable-epoch-sui-conservation-check: false
+      enable-deep-per-tx-sui-conservation-check: false
       force-disable-epoch-sui-conservation-check: false
-      enable-state-consistency-check: true
+      enable-state-consistency-check: false
       force-disable-state-consistency-check: false
-      enable-move-vm-paranoid-checks: true
+      enable-move-vm-paranoid-checks: false
+      enable-secondary-index-checks: false
     transaction-deny-config:
-      package_publish_disabled: false
-      package_upgrade_disabled: false
-      shared_object_disabled: false
-      user_transaction_disabled: false
+      package-publish-disabled: false
+      package-upgrade-disabled: false
+      shared-object-disabled: false
+      user-transaction-disabled: false
+      receiving-objects-disabled: false
+      zklogin-sig-disabled: false
+      zklogin-disabled-providers: []
     certificate-deny-config: {}
     state-debug-dump-config: {}
+    state-archive-write-config:
+      concurrency: 0
+      use-for-pruning-watermark: false
+    state-archive-read-config: []
+    state-snapshot-write-config:
+      concurrency: 0
+    indexer-max-subscriptions: ~
+    transaction-kv-store-read-config:
+      base-url: ""
+    jwk-fetch-interval-seconds: 3600
+    zklogin-oauth-providers:
+      Mainnet:
+        - Facebook
+        - Google
+        - Twitch
+      Testnet:
+        - Facebook
+        - Google
+        - Twitch
+      Unknown:
+        - Apple
+        - Facebook
+        - Google
+        - Kakao
+        - Slack
+        - Twitch
+    overload-threshold-config:
+      max_txn_age_in_queue:
+        secs: 1
+        nanos: 0
   - protocol-key-pair:
       value: a74f03IOjL8ZFSWFChFVEi+wiMwHNwNCPDGIYkGfgjs=
     worker-key-pair:
@@ -542,6 +674,7 @@ validator_configs:
     db-path: /tmp/foo/
     network-address: ""
     json-rpc-address: "0.0.0.0:1"
+    enable-experimental-rest-api: true
     metrics-address: "0.0.0.0:1"
     admin-interface-port: 8888
     consensus-config:
@@ -554,23 +687,13 @@ validator_configs:
       narwhal-config:
         header_num_of_batches_threshold: 32
         max_header_num_of_batches: 1000
-        max_header_delay: 2000ms
+        max_header_delay: 1000ms
         min_header_delay: 500ms
         gc_depth: 50
         sync_retry_delay: 5000ms
         sync_retry_nodes: 3
         batch_size: 5000000
         max_batch_delay: 100ms
-        block_synchronizer:
-          range_synchronize_timeout: 30000ms
-          certificates_synchronize_timeout: 30000ms
-          payload_synchronize_timeout: 30000ms
-          payload_availability_timeout: 30000ms
-          handler_certificate_deliver_timeout: 30000ms
-        consensus_api_grpc:
-          socket_addr: ""
-          get_collections_timeout: 5000ms
-          remove_collections_timeout: 5000ms
         max_concurrent_requests: 500000
         prometheus_metrics:
           socket_addr: /ip4/127.0.0.1/tcp/1234
@@ -579,10 +702,8 @@ validator_configs:
           worker_network_admin_server_base_port: 8765
         anemo:
           send_certificate_rate_limit: ~
-          get_payload_availability_rate_limit: ~
-          get_certificates_rate_limit: ~
           report_batch_rate_limit: ~
-          request_batch_rate_limit: ~
+          request_batches_rate_limit: ~
     enable-event-processing: false
     enable-index-processing: true
     grpc-load-shed: ~
@@ -597,7 +718,6 @@ validator_configs:
       num-epochs-to-retain: 2
       max-checkpoints-in-batch: 10
       max-transactions-in-batch: 1000
-      use-range-deletion: true
     end-of-epoch-broadcast-channel-capacity: 128
     checkpoint-executor-config:
       checkpoint-execution-max-concurrency: 200
@@ -606,19 +726,53 @@ validator_configs:
       perform-db-checkpoints-at-epoch-end: false
     indirect-objects-threshold: 18446744073709551615
     expensive-safety-check-config:
-      enable-epoch-sui-conservation-check: true
-      enable-deep-per-tx-sui-conservation-check: true
+      enable-epoch-sui-conservation-check: false
+      enable-deep-per-tx-sui-conservation-check: false
       force-disable-epoch-sui-conservation-check: false
-      enable-state-consistency-check: true
+      enable-state-consistency-check: false
       force-disable-state-consistency-check: false
-      enable-move-vm-paranoid-checks: true
+      enable-move-vm-paranoid-checks: false
+      enable-secondary-index-checks: false
     transaction-deny-config:
-      package_publish_disabled: false
-      package_upgrade_disabled: false
-      shared_object_disabled: false
-      user_transaction_disabled: false
+      package-publish-disabled: false
+      package-upgrade-disabled: false
+      shared-object-disabled: false
+      user-transaction-disabled: false
+      receiving-objects-disabled: false
+      zklogin-sig-disabled: false
+      zklogin-disabled-providers: []
     certificate-deny-config: {}
     state-debug-dump-config: {}
+    state-archive-write-config:
+      concurrency: 0
+      use-for-pruning-watermark: false
+    state-archive-read-config: []
+    state-snapshot-write-config:
+      concurrency: 0
+    indexer-max-subscriptions: ~
+    transaction-kv-store-read-config:
+      base-url: ""
+    jwk-fetch-interval-seconds: 3600
+    zklogin-oauth-providers:
+      Mainnet:
+        - Facebook
+        - Google
+        - Twitch
+      Testnet:
+        - Facebook
+        - Google
+        - Twitch
+      Unknown:
+        - Apple
+        - Facebook
+        - Google
+        - Kakao
+        - Slack
+        - Twitch
+    overload-threshold-config:
+      max_txn_age_in_queue:
+        secs: 1
+        nanos: 0
 account_keys:
   - Hloy4pnf8pWEHGP+4OFsXz56bLdIJhkD2O+OdKMqCA4=
   - pvMScjoMR/DaN0M5IOxS2VpGC59N6kv6gDm63ufLQ5w=

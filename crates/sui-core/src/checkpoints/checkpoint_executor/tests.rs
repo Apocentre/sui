@@ -19,7 +19,7 @@ use crate::authority::test_authority_builder::TestAuthorityBuilder;
 use crate::{
     authority::AuthorityState, checkpoints::CheckpointStore, state_accumulator::StateAccumulator,
 };
-use sui_network::state_sync::test_utils::{empty_contents, CommitteeFixture};
+use sui_swarm_config::test_utils::{empty_contents, CommitteeFixture};
 use sui_types::sui_system_state::epoch_start_sui_system_state::EpochStartSystemState;
 
 /// Test checkpoint executor happy path, test that checkpoint executor correctly
@@ -38,12 +38,10 @@ pub async fn test_checkpoint_executor_crash_recovery() {
         CommitteeFixture,
     ) = init_executor_test(buffer_size, checkpoint_store.clone()).await;
 
-    assert!(matches!(
-        checkpoint_store
-            .get_highest_executed_checkpoint_seq_number()
-            .unwrap(),
-        None,
-    ));
+    assert!(checkpoint_store
+        .get_highest_executed_checkpoint_seq_number()
+        .unwrap()
+        .is_none());
     let checkpoints = sync_new_checkpoints(
         &checkpoint_store,
         &checkpoint_sender,
@@ -127,12 +125,10 @@ pub async fn test_checkpoint_executor_cross_epoch() {
     let epoch = epoch_store.epoch();
     assert_eq!(epoch, 0);
 
-    assert!(matches!(
-        checkpoint_store
-            .get_highest_executed_checkpoint_seq_number()
-            .unwrap(),
-        None,
-    ));
+    assert!(checkpoint_store
+        .get_highest_executed_checkpoint_seq_number()
+        .unwrap()
+        .is_none());
 
     // sync 20 checkpoints
     let cold_start_checkpoints = sync_new_checkpoints(
@@ -164,7 +160,7 @@ pub async fn test_checkpoint_executor_cross_epoch() {
     );
 
     authority_state
-        .checkpoint_store
+        .get_checkpoint_store()
         .epoch_last_checkpoint_map
         .insert(
             &end_of_epoch_0_checkpoint.epoch,
@@ -172,7 +168,7 @@ pub async fn test_checkpoint_executor_cross_epoch() {
         )
         .unwrap();
     authority_state
-        .checkpoint_store
+        .get_checkpoint_store()
         .certified_checkpoints
         .insert(
             end_of_epoch_0_checkpoint.sequence_number(),
@@ -291,12 +287,10 @@ pub async fn test_reconfig_crash_recovery() {
     )
     .await;
 
-    assert!(matches!(
-        checkpoint_store
-            .get_highest_executed_checkpoint_seq_number()
-            .unwrap(),
-        None,
-    ));
+    assert!(checkpoint_store
+        .get_highest_executed_checkpoint_seq_number()
+        .unwrap()
+        .is_none());
 
     // sync 1 checkpoint
     let checkpoint = sync_new_checkpoints(
@@ -425,8 +419,8 @@ fn sync_new_checkpoints(
     previous_checkpoint: Option<VerifiedCheckpoint>,
     committee: &CommitteeFixture,
 ) -> Vec<VerifiedCheckpoint> {
-    let (ordered_checkpoints, _sequence_number_to_digest, _checkpoints) =
-        committee.make_checkpoints(number_of_checkpoints, previous_checkpoint);
+    let (ordered_checkpoints, _, _sequence_number_to_digest, _checkpoints) =
+        committee.make_empty_checkpoints(number_of_checkpoints, previous_checkpoint);
 
     for checkpoint in ordered_checkpoints.iter() {
         sync_checkpoint(checkpoint, checkpoint_store, sender);
@@ -471,7 +465,7 @@ fn sync_checkpoint(
     sender: &Sender<VerifiedCheckpoint>,
 ) {
     checkpoint_store
-        .insert_verified_checkpoint(checkpoint.clone())
+        .insert_verified_checkpoint(checkpoint)
         .unwrap();
     checkpoint_store
         .insert_checkpoint_contents(empty_contents().into_inner().into_checkpoint_contents())

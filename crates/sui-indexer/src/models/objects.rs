@@ -1,7 +1,10 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::BTreeMap, str::FromStr};
+use std::{
+    collections::{BTreeMap, HashMap},
+    str::FromStr,
+};
 
 use diesel::deserialize::FromSql;
 use diesel::pg::{Pg, PgValue};
@@ -13,13 +16,17 @@ use diesel_derive_enum::DbEnum;
 use fastcrypto::encoding::{Base64, Encoding};
 use serde::{Deserialize, Serialize};
 use serde_json;
+use std::collections::hash_map::Entry;
 
 use move_bytecode_utils::module_cache::GetModule;
 use sui_json_rpc_types::{SuiObjectData, SuiObjectRef, SuiRawData};
-use sui_types::base_types::{ObjectID, ObjectRef, ObjectType, SequenceNumber, SuiAddress};
 use sui_types::digests::TransactionDigest;
 use sui_types::move_package::MovePackage;
-use sui_types::object::{Data, MoveObject, ObjectFormatOptions, ObjectRead, Owner};
+use sui_types::object::{Data, MoveObject, ObjectRead, Owner};
+use sui_types::{
+    base_types::{ObjectID, ObjectRef, ObjectType, SequenceNumber, SuiAddress},
+    storage::WriteKind,
+};
 
 use crate::errors::IndexerError;
 use crate::models::owners::OwnerType;
@@ -120,7 +127,58 @@ pub enum ObjectStatus {
     UnwrappedThenDeleted,
 }
 
+impl From<WriteKind> for ObjectStatus {
+    fn from(value: WriteKind) -> Self {
+        match value {
+            WriteKind::Mutate => Self::Mutated,
+            WriteKind::Create => Self::Created,
+            WriteKind::Unwrap => Self::Unwrapped,
+        }
+    }
+}
+
 impl Object {
+    pub fn new(
+        epoch: u64,
+        checkpoint: u64,
+        kind: WriteKind,
+        object: &sui_types::object::Object,
+    ) -> Self {
+        let (owner_type, owner_address, initial_shared_version) =
+            owner_to_owner_info(&object.owner);
+
+        let has_public_transfer = object
+            .data
+            .try_as_move()
+            .map(|o| o.has_public_transfer())
+            .unwrap_or(false);
+        let object_type = object
+            .data
+            .try_as_move()
+            .map(|o| o.type_().to_string())
+            .unwrap_or_else(|| "".to_owned());
+
+        Self {
+            epoch: epoch as i64,
+            checkpoint: checkpoint as i64,
+            object_id: object.id().to_string(),
+            version: object.version().value() as i64,
+            object_digest: object.digest().to_string(),
+            owner_type,
+            owner_address,
+            initial_shared_version,
+            previous_transaction: object.previous_transaction.to_string(),
+            object_type,
+            object_status: kind.into(),
+            has_public_transfer,
+            storage_rebate: object.storage_rebate as i64,
+            bcs: vec![NamedBcsBytes(
+                OBJECT.to_string(),
+                bcs::to_bytes(object).unwrap(),
+            )],
+        }
+    }
+
     pub fn from(
         epoch: u64,
         checkpoint: Option<u64>,
@@ -182,7 +240,7 @@ impl Object {
             _ => {
                 let oref = self.get_object_ref()?;
                 let object: sui_types::object::Object = self.try_into()?;
-                let layout = object.get_layout(ObjectFormatOptions::default(), module_cache)?;
+                let layout = object.get_layout(module_cache)?;
                 ObjectRead::Exists(oref, object, layout)
             }
         })
@@ -245,12 +303,13 @@ impl TryFrom<Object> for sui_types::object::Object {
                     BTreeMap::new(),
                 )
                 .unwrap();
-                sui_types::object::Object {
+                sui_types::object::ObjectInner {
                     data: Data::Package(package),
                     owner,
                     previous_transaction,
                     storage_rebate: o.storage_rebate as u64,
                 }
+                .into()
             }
             // Reconstructing MoveObject form database table, move VM safety concern is irrelevant here.
             ObjectType::Struct(object_type) => unsafe {
@@ -270,12 +329,13 @@ impl TryFrom<Object> for sui_types::object::Object {
                 )
                 .unwrap();
 
-                sui_types::object::Object {
+                sui_types::object::ObjectInner {
                     data: Data::Move(object),
                     owner,
                     previous_transaction,
                     storage_rebate: o.storage_rebate as u64,
                 }
+                .into()
             },
         })
     }
@@ -444,29 +504,23 @@ pub fn compose_object_bulk_insert_query(objects: &[Object]) -> String {
     bulk_insert_query
 }
 
-pub fn group_and_sort_objects(objects: Vec<Object>) -> Vec<Vec<Object>> {
-    let mut objects_sorted = objects;
-    objects_sorted.sort_by(|a, b| a.object_id.cmp(&b.object_id));
-    // Group objects by object_id
-    let mut groups: Vec<Vec<Object>> = vec![];
-    let mut current_group: Vec<Object> = vec![];
-    let mut current_object_id = String::new();
-    for object in objects_sorted {
-        if object.object_id != current_object_id {
-            if !current_group.is_empty() {
-                // Sort the group by version, in a reverse order to be popped later
-                current_group.sort_by(|a, b| b.version.cmp(&a.version));
-                groups.push(current_group);
+pub fn filter_latest_objects(objects: Vec<Object>) -> Vec<Object> {
+    // Transactions in checkpoint are ordered by causal depedencies.
+    // But HashMap is not a lot more costly than HashSet, and it
+    // may be good to still keep the relative order of objects in
+    // the checkpoint.
+    let mut latest_objects = HashMap::new();
+    for object in objects {
+        match latest_objects.entry(object.object_id.clone()) {
+            Entry::Vacant(e) => {
+                e.insert(object);
             }
-            current_group = vec![];
-            current_object_id = object.object_id.clone();
+            Entry::Occupied(mut e) => {
+                if object.version > e.get().version {
+                    e.insert(object);
+                }
+            }
         }
-        current_group.push(object);
     }
-    // Sort the last group by version, in a reverse order to be popped later
-    if !current_group.is_empty() {
-        current_group.sort_by(|a, b| b.version.cmp(&a.version));
-        groups.push(current_group);
-    }
-    groups
+    latest_objects.into_values().collect()
 }

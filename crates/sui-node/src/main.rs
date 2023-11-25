@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use clap::Parser;
-use fastcrypto::encoding::{Encoding, Hex};
 use mysten_common::sync::async_once_cell::AsyncOnceCell;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,7 +20,7 @@ const GIT_REVISION: &str = {
         revision
     } else {
         let version = git_version::git_version!(
-            args = ["--always", "--dirty", "--exclude", "*"],
+            args = ["--always", "--abbrev=12", "--dirty", "--exclude", "*"],
             fallback = ""
         );
 
@@ -46,7 +45,7 @@ struct Args {
 }
 
 fn main() {
-    // Ensure that a validator never calls get_for_min_version/get_for_max_version.
+    // Ensure that a validator never calls get_for_min_version/get_for_max_version_UNSAFE.
     // TODO: re-enable after we figure out how to eliminate crashes in prod because of this.
     // ProtocolConfig::poison_get_for_min_version();
 
@@ -59,20 +58,18 @@ fn main() {
     config.supported_protocol_versions = Some(SupportedProtocolVersions::SYSTEM_DEFAULT);
 
     let runtimes = SuiRuntimes::new(&config);
-    let registry_service = {
-        let _enter = runtimes.metrics.enter();
-        metrics::start_prometheus_server(config.metrics_address)
-    };
+    let metrics_rt = runtimes.metrics.enter();
+    let registry_service = mysten_metrics::start_prometheus_server(config.metrics_address);
     let prometheus_registry = registry_service.default_registry();
 
     // Initialize logging
     let (_guard, filter_handle) = telemetry_subscribers::TelemetryConfig::new()
-        // Set a default
-        .with_sample_nth(10)
         .with_target_prefix("sui_json_rpc")
         .with_env()
         .with_prom_registry(&prometheus_registry)
         .init();
+
+    drop(metrics_rt);
 
     info!("Sui Node version: {VERSION}");
     info!(
@@ -105,16 +102,15 @@ fn main() {
     let rpc_runtime = runtimes.json_rpc.handle().clone();
 
     runtimes.sui_node.spawn(async move {
-        if let Err(e) = sui_node::SuiNode::start_async(
-            &config,
-            registry_service,
-            node_once_cell_clone,
-            Some(rpc_runtime),
-        )
-        .await
-        {
-            error!("Failed to start node: {e:?}");
-            std::process::exit(1)
+        match sui_node::SuiNode::start_async(&config, registry_service, Some(rpc_runtime)).await {
+            Ok(sui_node) => node_once_cell_clone
+                .set(sui_node)
+                .expect("Failed to set node in AsyncOnceCell"),
+
+            Err(e) => {
+                error!("Failed to start node: {e:?}");
+                std::process::exit(1);
+            }
         }
         // TODO: Do we want to provide a way for the node to gracefully shutdown?
         loop {
@@ -126,14 +122,18 @@ fn main() {
     runtimes.metrics.spawn(async move {
         let node = node_once_cell_clone.get().await;
         let chain_identifier = match node.state().get_chain_identifier() {
-            // Unwrap safe: Checkpoint Digest is 32 bytes long
-            Some(chain_identifier) => Hex::encode(chain_identifier.into_inner().get(0..4).unwrap()),
-            None => "Unknown".to_string(),
+            Some(chain_identifier) => chain_identifier.to_string(),
+            None => "unknown".to_string(),
         };
 
         info!("Sui chain identifier: {chain_identifier}");
         prometheus_registry
             .register(mysten_metrics::uptime_metric(
+                if is_validator {
+                    "validator"
+                } else {
+                    "fullnode"
+                },
                 VERSION,
                 chain_identifier.as_str(),
             ))

@@ -12,13 +12,15 @@ use once_cell::sync::OnceCell;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use std::usize;
 use sui_keys::keypair_file::{read_authority_keypair_from_file, read_keypair_from_file};
-use sui_protocol_config::SupportedProtocolVersions;
+use sui_protocol_config::{Chain, SupportedProtocolVersions};
 use sui_storage::object_store::ObjectStoreConfig;
 use sui_types::base_types::{ObjectID, SuiAddress};
 use sui_types::crypto::AuthorityPublicKeyBytes;
@@ -27,6 +29,7 @@ use sui_types::crypto::NetworkKeyPair;
 use sui_types::crypto::SuiKeyPair;
 use sui_types::crypto::{get_key_pair_from_rng, AccountKeyPair, AuthorityKeyPair};
 use sui_types::multiaddr::Multiaddr;
+use tracing::info;
 
 // Default max number of concurrent requests served
 pub const DEFAULT_GRPC_CONCURRENCY_LIMIT: usize = 20000000000;
@@ -55,6 +58,9 @@ pub struct NodeConfig {
     pub network_address: Multiaddr,
     #[serde(default = "default_json_rpc_address")]
     pub json_rpc_address: SocketAddr,
+
+    #[serde(default)]
+    pub enable_experimental_rest_api: bool,
 
     #[serde(default = "default_metrics_address")]
     pub metrics_address: SocketAddr,
@@ -129,6 +135,70 @@ pub struct NodeConfig {
 
     #[serde(default)]
     pub state_debug_dump_config: StateDebugDumpConfig,
+
+    #[serde(default)]
+    pub state_archive_write_config: StateArchiveConfig,
+
+    #[serde(default)]
+    pub state_archive_read_config: Vec<StateArchiveConfig>,
+
+    #[serde(default)]
+    pub state_snapshot_write_config: StateSnapshotConfig,
+
+    #[serde(default)]
+    pub indexer_max_subscriptions: Option<usize>,
+
+    #[serde(default = "default_transaction_kv_store_config")]
+    pub transaction_kv_store_read_config: TransactionKeyValueStoreReadConfig,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction_kv_store_write_config: Option<TransactionKeyValueStoreWriteConfig>,
+
+    #[serde(default = "default_jwk_fetch_interval_seconds")]
+    pub jwk_fetch_interval_seconds: u64,
+
+    #[serde(default = "default_zklogin_oauth_providers")]
+    pub zklogin_oauth_providers: BTreeMap<Chain, BTreeSet<String>>,
+
+    #[serde(default = "default_overload_threshold_config")]
+    pub overload_threshold_config: OverloadThresholdConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct TransactionKeyValueStoreReadConfig {
+    pub base_url: String,
+}
+
+fn default_jwk_fetch_interval_seconds() -> u64 {
+    3600
+}
+
+pub fn default_zklogin_oauth_providers() -> BTreeMap<Chain, BTreeSet<String>> {
+    let mut map = BTreeMap::new();
+    let experimental_providers = BTreeSet::from([
+        "Google".to_string(),
+        "Facebook".to_string(),
+        "Twitch".to_string(),
+        "Kakao".to_string(),
+        "Apple".to_string(),
+        "Slack".to_string(),
+    ]);
+    let providers = BTreeSet::from([
+        "Google".to_string(),
+        "Facebook".to_string(),
+        "Twitch".to_string(),
+    ]);
+    map.insert(Chain::Mainnet, providers.clone());
+    map.insert(Chain::Testnet, providers);
+    map.insert(Chain::Unknown, experimental_providers);
+    map
+}
+
+fn default_transaction_kv_store_config() -> TransactionKeyValueStoreReadConfig {
+    TransactionKeyValueStoreReadConfig {
+        base_url: "https://transactions.sui.io/".to_string(),
+    }
 }
 
 fn default_authority_store_pruning_config() -> AuthorityStorePruningConfig {
@@ -166,11 +236,6 @@ pub fn default_admin_interface_port() -> u16 {
 pub fn default_json_rpc_address() -> SocketAddr {
     use std::net::{IpAddr, Ipv4Addr};
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9000)
-}
-
-pub fn default_websocket_address() -> Option<SocketAddr> {
-    use std::net::{IpAddr, Ipv4Addr};
-    Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9001))
 }
 
 pub fn default_concurrency_limit() -> Option<usize> {
@@ -224,6 +289,14 @@ impl NodeConfig {
         self.db_path.join("db_checkpoints")
     }
 
+    pub fn archive_path(&self) -> PathBuf {
+        self.db_path.join("archive")
+    }
+
+    pub fn snapshot_path(&self) -> PathBuf {
+        self.db_path.join("snapshot")
+    }
+
     pub fn network_address(&self) -> &Multiaddr {
         &self.network_address
     }
@@ -235,6 +308,35 @@ impl NodeConfig {
     pub fn genesis(&self) -> Result<&genesis::Genesis> {
         self.genesis.genesis()
     }
+
+    pub fn sui_address(&self) -> SuiAddress {
+        (&self.account_key_pair.keypair().public()).into()
+    }
+
+    pub fn archive_reader_config(&self) -> Vec<ArchiveReaderConfig> {
+        self.state_archive_read_config
+            .iter()
+            .flat_map(|config| {
+                config
+                    .object_store_config
+                    .as_ref()
+                    .map(|remote_store_config| ArchiveReaderConfig {
+                        remote_store_config: remote_store_config.clone(),
+                        download_concurrency: NonZeroUsize::new(config.concurrency)
+                            .unwrap_or(NonZeroUsize::new(5).unwrap()),
+                        use_for_pruning_watermark: config.use_for_pruning_watermark,
+                    })
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub enum ConsensusProtocol {
+    #[serde(rename = "narwhal")]
+    Narwhal,
+    #[serde(rename = "mysticeti")]
+    Mysticeti,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -263,6 +365,11 @@ pub struct ConsensusConfig {
     pub submit_delay_step_override_millis: Option<u64>,
 
     pub narwhal_config: ConsensusParameters,
+
+    /// The choice of consensus protocol to run. We default to Narwhal.
+    #[serde(skip)]
+    #[serde(default = "default_consensus_protocol")]
+    pub protocol: ConsensusProtocol,
 }
 
 impl ConsensusConfig {
@@ -286,6 +393,10 @@ impl ConsensusConfig {
     pub fn narwhal_config(&self) -> &ConsensusParameters {
         &self.narwhal_config
     }
+}
+
+pub fn default_consensus_protocol() -> ConsensusProtocol {
+    ConsensusProtocol::Narwhal
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -339,6 +450,9 @@ pub struct ExpensiveSafetyCheckConfig {
     /// against some (but not all) potential bugs in the bytecode verifier
     #[serde(default)]
     enable_move_vm_paranoid_checks: bool,
+
+    #[serde(default)]
+    enable_secondary_index_checks: bool,
     // TODO: Add more expensive checks here
 }
 
@@ -351,6 +465,19 @@ impl ExpensiveSafetyCheckConfig {
             enable_state_consistency_check: true,
             force_disable_state_consistency_check: false,
             enable_move_vm_paranoid_checks: true,
+            enable_secondary_index_checks: false, // Disable by default for now
+        }
+    }
+
+    pub fn new_disable_all() -> Self {
+        Self {
+            enable_epoch_sui_conservation_check: false,
+            enable_deep_per_tx_sui_conservation_check: false,
+            force_disable_epoch_sui_conservation_check: true,
+            enable_state_consistency_check: false,
+            force_disable_state_consistency_check: true,
+            enable_move_vm_paranoid_checks: false,
+            enable_secondary_index_checks: false,
         }
     }
 
@@ -382,6 +509,10 @@ impl ExpensiveSafetyCheckConfig {
 
     pub fn enable_deep_per_tx_sui_conservation_check(&self) -> bool {
         self.enable_deep_per_tx_sui_conservation_check || cfg!(debug_assertions)
+    }
+
+    pub fn enable_secondary_index_checks(&self) -> bool {
+        self.enable_secondary_index_checks
     }
 }
 
@@ -421,14 +552,17 @@ pub struct AuthorityStorePruningConfig {
     pub max_checkpoints_in_batch: usize,
     /// maximum number of transaction in the pruning batch
     pub max_transactions_in_batch: usize,
-    /// pruner deletion method. If set to `true`, range deletion is utilized (recommended).
-    /// Use `false` for point deletes.
-    pub use_range_deletion: bool,
     /// enables periodic background compaction for old SST files whose last modified time is
     /// older than `periodic_compaction_threshold_days` days.
     /// That ensures that all sst files eventually go through the compaction process
     #[serde(skip_serializing_if = "Option::is_none")]
     pub periodic_compaction_threshold_days: Option<usize>,
+    /// number of epochs to keep the latest version of transactions and effects for
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_epochs_to_retain_for_checkpoints: Option<u64>,
+    /// disables object tombstone pruning. We don't serialize it if it is the default value, false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub killswitch_tombstone_pruning: bool,
 }
 
 impl Default for AuthorityStorePruningConfig {
@@ -443,8 +577,9 @@ impl Default for AuthorityStorePruningConfig {
             pruning_run_delay_seconds,
             max_checkpoints_in_batch: 10,
             max_transactions_in_batch: 1000,
-            use_range_deletion: true,
             periodic_compaction_threshold_days: None,
+            num_epochs_to_retain_for_checkpoints: None,
+            killswitch_tombstone_pruning: false,
         }
     }
 }
@@ -454,6 +589,7 @@ impl AuthorityStorePruningConfig {
         // TODO: Remove this after aggressive pruning is enabled by default
         let num_epochs_to_retain = if cfg!(msim) { 0 } else { 2 };
         let pruning_run_delay_seconds = if cfg!(msim) { Some(2) } else { None };
+        let num_epochs_to_retain_for_checkpoints = if cfg!(msim) { Some(2) } else { None };
         Self {
             num_latest_epoch_dbs_to_retain: 3,
             epoch_db_pruning_period_secs: 60 * 60,
@@ -461,14 +597,16 @@ impl AuthorityStorePruningConfig {
             pruning_run_delay_seconds,
             max_checkpoints_in_batch: 10,
             max_transactions_in_batch: 1000,
-            use_range_deletion: true,
             periodic_compaction_threshold_days: None,
+            num_epochs_to_retain_for_checkpoints,
+            killswitch_tombstone_pruning: false,
         }
     }
     pub fn fullnode_config() -> Self {
         // TODO: Remove this after aggressive pruning is enabled by default
         let num_epochs_to_retain = if cfg!(msim) { 0 } else { 2 };
         let pruning_run_delay_seconds = if cfg!(msim) { Some(2) } else { None };
+        let num_epochs_to_retain_for_checkpoints = if cfg!(msim) { Some(2) } else { None };
         Self {
             num_latest_epoch_dbs_to_retain: 3,
             epoch_db_pruning_period_secs: 60 * 60,
@@ -476,9 +614,31 @@ impl AuthorityStorePruningConfig {
             pruning_run_delay_seconds,
             max_checkpoints_in_batch: 10,
             max_transactions_in_batch: 1000,
-            use_range_deletion: true,
             periodic_compaction_threshold_days: None,
+            num_epochs_to_retain_for_checkpoints,
+            killswitch_tombstone_pruning: false,
         }
+    }
+
+    pub fn set_num_epochs_to_retain_for_checkpoints(&mut self, num_epochs_to_retain: Option<u64>) {
+        self.num_epochs_to_retain_for_checkpoints = num_epochs_to_retain;
+    }
+
+    pub fn num_epochs_to_retain_for_checkpoints(&self) -> Option<u64> {
+        self.num_epochs_to_retain_for_checkpoints
+            // if n less than 2, coerce to 2 and log
+            .map(|n| {
+                if n < 2 {
+                    info!("num_epochs_to_retain_for_checkpoints must be at least 2, rounding up from {}", n);
+                    2
+                } else {
+                    n
+                }
+            })
+    }
+
+    pub fn set_killswitch_tombstone_pruning(&mut self, killswitch_tombstone_pruning: bool) {
+        self.killswitch_tombstone_pruning = killswitch_tombstone_pruning;
     }
 }
 
@@ -504,6 +664,64 @@ pub struct DBCheckpointConfig {
     pub perform_index_db_checkpoints_at_epoch_end: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prune_and_compact_before_upload: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArchiveReaderConfig {
+    pub remote_store_config: ObjectStoreConfig,
+    pub download_concurrency: NonZeroUsize,
+    pub use_for_pruning_watermark: bool,
+}
+
+#[derive(Default, Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct StateArchiveConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_store_config: Option<ObjectStoreConfig>,
+    pub concurrency: usize,
+    pub use_for_pruning_watermark: bool,
+}
+
+#[derive(Default, Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct StateSnapshotConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_store_config: Option<ObjectStoreConfig>,
+    pub concurrency: usize,
+}
+
+#[derive(Default, Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct TransactionKeyValueStoreWriteConfig {
+    pub aws_access_key_id: String,
+    pub aws_secret_access_key: String,
+    pub aws_region: String,
+    pub table_name: String,
+    pub bucket_name: String,
+    pub concurrency: usize,
+}
+
+/// Configuration for the threshold(s) at which we consider the system
+/// to be overloaded. When one of the threshold is passed, the node may
+/// stop processing new transactions and/or certificates until the congestion
+/// resolves.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OverloadThresholdConfig {
+    pub max_txn_age_in_queue: Duration,
+    // TODO: Move other thresholds here as well, including `MAX_TM_QUEUE_LENGTH`
+    // and `MAX_PER_OBJECT_QUEUE_LENGTH`.
+}
+
+impl Default for OverloadThresholdConfig {
+    fn default() -> Self {
+        Self {
+            max_txn_age_in_queue: Duration::from_secs(1), // 1 second
+        }
+    }
+}
+
+fn default_overload_threshold_config() -> OverloadThresholdConfig {
+    OverloadThresholdConfig::default()
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Eq)]

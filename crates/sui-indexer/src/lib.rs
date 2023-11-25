@@ -2,31 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 #![recursion_limit = "256"]
 
-use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::{collections::HashMap, time::Duration};
 
 use anyhow::{anyhow, Result};
 use axum::{extract::Extension, http::StatusCode, routing::get, Router};
-use backoff::future::retry;
-use backoff::ExponentialBackoff;
 use clap::Parser;
 use diesel::pg::PgConnection;
-use diesel::prelude::*;
 use diesel::r2d2::ConnectionManager;
-use diesel_async::pooled_connection::deadpool::{Object, Pool};
-use diesel_async::pooled_connection::AsyncDieselConnectionManager;
-use diesel_async::AsyncPgConnection;
-use futures::future::BoxFuture;
-use futures::FutureExt;
 use jsonrpsee::http_client::{HeaderMap, HeaderValue, HttpClient, HttpClientBuilder};
 use metrics::IndexerMetrics;
 use prometheus::{Registry, TextEncoder};
 use regex::Regex;
-use rustls::client::{ServerCertVerified, ServerCertVerifier};
-use rustls::{Certificate, Error, ServerName};
 use tokio::runtime::Handle;
 use tracing::{info, warn};
 use url::Url;
@@ -36,32 +24,37 @@ use apis::{
     WriteApi,
 };
 use errors::IndexerError;
-use handlers::checkpoint_handler::CheckpointHandler;
 use mysten_metrics::{spawn_monitored_task, RegistryService};
 use processors::processor_orchestrator::ProcessorOrchestrator;
 use store::IndexerStore;
-use sui_core::event_handler::SubscriptionHandler;
-use sui_json_rpc::{JsonRpcServerBuilder, ServerHandle, CLIENT_SDK_TYPE_HEADER};
+use sui_json_rpc::{JsonRpcServerBuilder, ServerHandle, ServerType, CLIENT_SDK_TYPE_HEADER};
 use sui_sdk::{SuiClient, SuiClientBuilder};
 
 use crate::apis::MoveUtilsApi;
+use crate::framework::IndexerBuilder;
+use crate::handlers::checkpoint_handler::new_handlers;
 
 pub mod apis;
 pub mod errors;
+pub mod framework;
 mod handlers;
+pub mod indexer_reader;
+pub mod indexer_v2;
 pub mod metrics;
 pub mod models;
+pub mod models_v2;
 pub mod processors;
+pub mod processors_v2;
 pub mod schema;
+pub mod schema_v2;
 pub mod store;
 pub mod test_utils;
 pub mod types;
+pub mod types_v2;
 pub mod utils;
 
 pub type PgConnectionPool = diesel::r2d2::Pool<ConnectionManager<PgConnection>>;
 pub type PgPoolConnection = diesel::r2d2::PooledConnection<ConnectionManager<PgConnection>>;
-
-pub type AsyncPgConnectionPool = Pool<AsyncPgConnection>;
 
 const METRICS_ROUTE: &str = "/metrics";
 /// Returns all endpoints for which we have implemented on the indexer,
@@ -110,7 +103,7 @@ pub struct IndexerConfig {
     pub rpc_server_url: String,
     #[clap(long, default_value = "9000", global = true)]
     pub rpc_server_port: u16,
-    #[clap(long, multiple_occurrences = false, multiple_values = true)]
+    #[clap(long, num_args(1..))]
     pub migrated_methods: Vec<String>,
     #[clap(long)]
     pub reset_db: bool,
@@ -118,9 +111,13 @@ pub struct IndexerConfig {
     pub fullnode_sync_worker: bool,
     #[clap(long)]
     pub rpc_server_worker: bool,
+    #[clap(long)]
+    pub analytical_worker: bool,
     // NOTE: experimental only, do not use in production.
     #[clap(long)]
     pub skip_db_commit: bool,
+    #[clap(long)]
+    pub use_v2: bool,
 }
 
 impl IndexerConfig {
@@ -174,7 +171,9 @@ impl Default for IndexerConfig {
             reset_db: false,
             fullnode_sync_worker: true,
             rpc_server_worker: true,
+            analytical_worker: false,
             skip_db_commit: false,
+            use_v2: false,
         }
     }
 }
@@ -193,81 +192,42 @@ impl Indexer {
             "Sui indexer of version {:?} started...",
             env!("CARGO_PKG_VERSION")
         );
-        let event_handler = Arc::new(SubscriptionHandler::default());
 
-        if config.rpc_server_worker && config.fullnode_sync_worker {
-            info!("Starting indexer with both fullnode sync and RPC server");
-            // let JSON RPC server run forever.
-            let handle = build_json_rpc_server(
-                registry,
-                store.clone(),
-                event_handler.clone(),
-                config,
-                custom_runtime,
-            )
-            .await
-            .expect("Json rpc server should not run into errors upon start.");
-            spawn_monitored_task!(handle.stopped());
-
-            // let async processor run forever.
-            let mut processor_orchestrator = ProcessorOrchestrator::new(store.clone(), registry);
-            spawn_monitored_task!(processor_orchestrator.run_forever());
-
-            backoff::future::retry(ExponentialBackoff::default(), || async {
-                let event_handler_clone = event_handler.clone();
-                let metrics_clone = metrics.clone();
-                let http_client = get_http_client(config.rpc_client_url.as_str())?;
-                let cp = CheckpointHandler::new(
-                    store.clone(),
-                    http_client,
-                    event_handler_clone,
-                    metrics_clone,
-                    config,
-                );
-                cp.spawn()
-                    .await
-                    .expect("Indexer main should not run into errors.");
-                Ok(())
-            })
-            .await
-        } else if config.rpc_server_worker {
+        if config.rpc_server_worker {
             info!("Starting indexer with only RPC server");
-            let handle = build_json_rpc_server(
-                registry,
-                store.clone(),
-                event_handler.clone(),
-                config,
-                custom_runtime,
-            )
-            .await
-            .expect("Json rpc server should not run into errors upon start.");
+            let handle = build_json_rpc_server(registry, store.clone(), config, custom_runtime)
+                .await
+                .expect("Json rpc server should not run into errors upon start.");
             handle.stopped().await;
-            Ok(())
         } else if config.fullnode_sync_worker {
             info!("Starting indexer with only fullnode sync");
-            let mut processor_orchestrator = ProcessorOrchestrator::new(store.clone(), registry);
+            let mut processor_orchestrator =
+                ProcessorOrchestrator::new(store.clone(), metrics.clone());
             spawn_monitored_task!(processor_orchestrator.run_forever());
 
-            backoff::future::retry(ExponentialBackoff::default(), || async {
-                let event_handler_clone = event_handler.clone();
-                let metrics_clone = metrics.clone();
-                let http_client = get_http_client(config.rpc_client_url.as_str())?;
-                let cp = CheckpointHandler::new(
-                    store.clone(),
-                    http_client,
-                    event_handler_clone,
-                    metrics_clone,
-                    config,
-                );
-                cp.spawn()
-                    .await
-                    .expect("Indexer main should not run into errors.");
-                Ok(())
-            })
-            .await
-        } else {
-            Ok(())
+            // -1 will be returned when checkpoints table is empty.
+            let last_seq_from_db = store
+                .get_latest_tx_checkpoint_sequence_number()
+                .await
+                .expect("Failed to get latest tx checkpoint sequence number from DB");
+            let last_downloaded_checkpoint = if last_seq_from_db < 0 {
+                None
+            } else {
+                Some(last_seq_from_db as u64)
+            };
+
+            let (checkpoint_handler, object_handler) = new_handlers(store, metrics, config);
+
+            IndexerBuilder::new()
+                .last_downloaded_checkpoint(last_downloaded_checkpoint)
+                .rest_url(&config.rpc_client_url)
+                .handler(checkpoint_handler)
+                .handler(object_handler)
+                .run()
+                .await;
         }
+
+        Ok(())
     }
 }
 
@@ -305,104 +265,117 @@ fn get_http_client(rpc_client_url: &str) -> Result<HttpClient, IndexerError> {
         })
 }
 
-fn establish_connection(url: &str) -> BoxFuture<ConnectionResult<AsyncPgConnection>> {
-    async {
-        let mut config = rustls::ClientConfig::builder()
-            .with_safe_defaults()
-            .with_root_certificates(rustls::RootCertStore::empty())
-            .with_no_client_auth();
-
-        // TODO: we might want to set a proper SSL cert for DB and indexer
-        struct AcceptAllVerifier;
-        impl ServerCertVerifier for AcceptAllVerifier {
-            fn verify_server_cert(
-                &self,
-                _end_entity: &Certificate,
-                _intermediates: &[Certificate],
-                _server_name: &ServerName,
-                _scts: &mut dyn Iterator<Item = &[u8]>,
-                _ocsp_response: &[u8],
-                _now: SystemTime,
-            ) -> std::result::Result<ServerCertVerified, Error> {
-                Ok(ServerCertVerified::assertion())
-            }
-        }
-        config
-            .dangerous()
-            .set_certificate_verifier(Arc::new(AcceptAllVerifier));
-
-        let connector = tokio_postgres_rustls::MakeRustlsConnect::new(config);
-        let (client, connection) = tokio_postgres::connect(url, connector)
-            .await
-            .map_err(|e| ConnectionError::BadConnection(e.to_string()))?;
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("connection error: {}", e);
-            }
-        });
-        AsyncPgConnection::try_from(client).await
-    }
-    .boxed()
+pub fn new_pg_connection_pool(db_url: &str) -> Result<PgConnectionPool, IndexerError> {
+    new_pg_connection_pool_impl(db_url, None)
 }
 
-pub async fn new_pg_connection_pool(
+pub fn new_pg_connection_pool_impl(
     db_url: &str,
-) -> Result<(PgConnectionPool, AsyncPgConnectionPool), IndexerError> {
+    pool_size: Option<u32>,
+) -> Result<PgConnectionPool, IndexerError> {
+    let pool_config = PgConnectionPoolConfig::default();
     let manager = ConnectionManager::<PgConnection>::new(db_url);
-    // default connection pool max size is 10
-    let blocking_cp = diesel::r2d2::Pool::builder().build(manager).map_err(|e| {
-        IndexerError::PgConnectionPoolInitError(format!(
-            "Failed to initialize connection pool with error: {:?}",
-            e
-        ))
-    })?;
 
-    let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new_with_setup(
-        db_url,
-        establish_connection,
-    );
-    // Our vultr instances allow up to 197 concurrent connections,
-    // setting the default pool size to 187 for async connections and 10 for blocking connections.
-    let connection_size = env::var("DB_CONNECTION_SIZE")
-        .unwrap_or_else(|_| "187".to_string())
-        .parse::<usize>()
-        .unwrap_or(187);
-    info!("Creating connection pool with size: {connection_size}");
-    let async_pool = Pool::builder(manager)
-        .max_size(connection_size)
-        .build()
+    let pool_size = pool_size.unwrap_or(pool_config.pool_size);
+    diesel::r2d2::Pool::builder()
+        .max_size(pool_size)
+        .connection_timeout(pool_config.connection_timeout)
+        .connection_customizer(Box::new(pool_config.connection_config()))
+        .build(manager)
         .map_err(|e| {
             IndexerError::PgConnectionPoolInitError(format!(
-                "Failed to initialize async connection pool with error: {:?}",
+                "Failed to initialize connection pool with error: {:?}",
                 e
             ))
-        })?;
-    Ok((blocking_cp, async_pool))
+        })
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PgConnectionPoolConfig {
+    pool_size: u32,
+    connection_timeout: Duration,
+    statement_timeout: Duration,
+}
+
+impl PgConnectionPoolConfig {
+    const DEFAULT_POOL_SIZE: u32 = 100;
+    const DEFAULT_CONNECTION_TIMEOUT: u64 = 30;
+    const DEFAULT_STATEMENT_TIMEOUT: u64 = 30;
+
+    fn connection_config(&self) -> PgConnectionConfig {
+        PgConnectionConfig {
+            statement_timeout: self.statement_timeout,
+            read_only: false,
+        }
+    }
+
+    pub fn set_pool_size(&mut self, size: u32) {
+        self.pool_size = size;
+    }
+
+    pub fn set_connection_timeout(&mut self, timeout: Duration) {
+        self.connection_timeout = timeout;
+    }
+
+    pub fn set_statement_timeout(&mut self, timeout: Duration) {
+        self.statement_timeout = timeout;
+    }
+}
+
+impl Default for PgConnectionPoolConfig {
+    fn default() -> Self {
+        let db_pool_size = std::env::var("DB_POOL_SIZE")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(Self::DEFAULT_POOL_SIZE);
+        let conn_timeout_secs = std::env::var("DB_CONNECTION_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(Self::DEFAULT_CONNECTION_TIMEOUT);
+        let statement_timeout_secs = std::env::var("DB_STATEMENT_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(Self::DEFAULT_STATEMENT_TIMEOUT);
+
+        Self {
+            pool_size: db_pool_size,
+            connection_timeout: Duration::from_secs(conn_timeout_secs),
+            statement_timeout: Duration::from_secs(statement_timeout_secs),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PgConnectionConfig {
+    statement_timeout: Duration,
+    read_only: bool,
+}
+
+impl diesel::r2d2::CustomizeConnection<PgConnection, diesel::r2d2::Error> for PgConnectionConfig {
+    fn on_acquire(&self, conn: &mut PgConnection) -> std::result::Result<(), diesel::r2d2::Error> {
+        use diesel::{sql_query, RunQueryDsl};
+
+        sql_query(format!(
+            "SET statement_timeout = {}",
+            self.statement_timeout.as_millis(),
+        ))
+        .execute(conn)
+        .map_err(diesel::r2d2::Error::QueryError)?;
+
+        if self.read_only {
+            sql_query("SET default_transaction_read_only = 't'")
+                .execute(conn)
+                .map_err(diesel::r2d2::Error::QueryError)?;
+        }
+
+        Ok(())
+    }
 }
 
 pub fn get_pg_pool_connection(pool: &PgConnectionPool) -> Result<PgPoolConnection, IndexerError> {
-    backoff::retry(ExponentialBackoff::default(), || {
-        let pool_conn = pool.get()?;
-        Ok(pool_conn)
-    })
-    .map_err(|e| {
+    pool.get().map_err(|e| {
         IndexerError::PgPoolConnectionError(format!(
             "Failed to get connection from PG connection pool with error: {:?}",
-            e
-        ))
-    })
-}
-
-pub async fn get_async_pg_pool_connection(
-    pool: &AsyncPgConnectionPool,
-) -> Result<Object<AsyncPgConnection>, IndexerError> {
-    retry(ExponentialBackoff::default(), || async {
-        pool.get().await.map_err(backoff::Error::Permanent)
-    })
-    .await
-    .map_err(|e| {
-        IndexerError::PgPoolConnectionError(format!(
-            "Failed to get async connection from PG connection pool with error: {:?}",
             e
         ))
     })
@@ -411,7 +384,6 @@ pub async fn get_async_pg_pool_connection(
 pub async fn build_json_rpc_server<S: IndexerStore + Sync + Send + 'static + Clone>(
     prometheus_registry: &Registry,
     state: S,
-    event_handler: Arc<SubscriptionHandler>,
     config: &IndexerConfig,
     custom_runtime: Option<Handle>,
 ) -> Result<ServerHandle, IndexerError> {
@@ -429,10 +401,9 @@ pub async fn build_json_rpc_server<S: IndexerStore + Sync + Send + 'static + Clo
     builder.register_module(IndexerApi::new(
         state.clone(),
         http_client.clone(),
-        event_handler,
         config.migrated_methods.clone(),
     ))?;
-    builder.register_module(WriteApi::new(state.clone(), http_client.clone()))?;
+    builder.register_module(WriteApi::new(http_client.clone()))?;
     builder.register_module(ExtendedApi::new(state.clone()))?;
     builder.register_module(MoveUtilsApi::new(http_client))?;
     let default_socket_addr = SocketAddr::new(
@@ -440,7 +411,9 @@ pub async fn build_json_rpc_server<S: IndexerStore + Sync + Send + 'static + Clo
         config.rpc_server_url.as_str().parse().unwrap(),
         config.rpc_server_port,
     );
-    Ok(builder.start(default_socket_addr, custom_runtime).await?)
+    Ok(builder
+        .start(default_socket_addr, custom_runtime, Some(ServerType::Http))
+        .await?)
 }
 
 fn convert_url(url_str: &str) -> Option<String> {

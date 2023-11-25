@@ -74,7 +74,7 @@ module sui::kiosk_tests {
         let payment = coin::mint_for_testing<SUI>(AMT, ctx);
         let (asset, request) = kiosk::purchase(&mut kiosk, item_id, payment);
         assert!(!kiosk::is_listed(&kiosk, item_id), 0);
-        policy::confirm_request(&mut policy, request);
+        policy::confirm_request(&policy, request);
 
         test::return_kiosk(kiosk, owner_cap, ctx);
         test::return_assets(vector[ asset ]);
@@ -128,6 +128,7 @@ module sui::kiosk_tests {
         abort 1337
     }
 
+    #[allow(unused_field)]
     struct WrongAsset has key, store { id: sui::object::UID }
 
     #[test]
@@ -166,7 +167,7 @@ module sui::kiosk_tests {
         kiosk::place_and_list(&mut kiosk, &owner_cap, asset, AMT);
         let payment = coin::mint_for_testing<SUI>(AMT + 1, ctx);
         let (_asset, request) = kiosk::purchase(&mut kiosk, item_id, payment);
-        policy::confirm_request(&mut policy, request);
+        policy::confirm_request(&policy, request);
 
         abort 1337
     }
@@ -184,7 +185,7 @@ module sui::kiosk_tests {
         assert!(kiosk::is_listed_exclusively(&kiosk, item_id), 0);
         let (asset, request) = kiosk::purchase_with_cap(&mut kiosk, purchase_cap, payment);
         assert!(!kiosk::is_listed_exclusively(&kiosk, item_id), 0);
-        policy::confirm_request(&mut policy, request);
+        policy::confirm_request(&policy, request);
 
         test::return_kiosk(kiosk, owner_cap, ctx);
         test::return_assets(vector[ asset ]);
@@ -316,7 +317,7 @@ module sui::kiosk_tests {
     }
 
     #[test]
-    #[expected_failure(abort_code = sui::kiosk::EExtensionsDisabled)]
+    #[expected_failure(abort_code = sui::kiosk::EUidAccessNotAllowed)]
     fun test_disallow_extensions_uid_mut() {
         let ctx = &mut test::ctx();
         let (kiosk, owner_cap) = test::get_kiosk(ctx);
@@ -328,14 +329,13 @@ module sui::kiosk_tests {
     }
 
     #[test]
-    #[expected_failure(abort_code = sui::kiosk::EExtensionsDisabled)]
-    fun test_disallow_extensions_uid() {
+    fun test_disallow_extensions_uid_available() {
         let ctx = &mut test::ctx();
         let (kiosk, owner_cap) = test::get_kiosk(ctx);
 
         kiosk::set_allow_extensions(&mut kiosk, &owner_cap, false);
         let _ = kiosk::uid(&kiosk);
 
-        abort 1337
+        test::return_kiosk(kiosk, owner_cap, ctx);
     }
 }

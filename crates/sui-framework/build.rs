@@ -85,6 +85,7 @@ fn build_packages(
 ) {
     let config = MoveBuildConfig {
         generate_docs: true,
+        warnings_are_errors: true,
         install_dir: Some(PathBuf::from(".")),
         ..Default::default()
     };
@@ -103,6 +104,7 @@ fn build_packages(
     let config = MoveBuildConfig {
         generate_docs: true,
         test_mode: true,
+        warnings_are_errors: true,
         install_dir: Some(PathBuf::from(".")),
         ..Default::default()
     };
@@ -134,6 +136,7 @@ fn build_packages_with_move_config(
         config: config.clone(),
         run_bytecode_verifier: true,
         print_diags_to_stderr: false,
+        lint: false,
     }
     .build(sui_framework_path)
     .unwrap();
@@ -141,6 +144,7 @@ fn build_packages_with_move_config(
         config: config.clone(),
         run_bytecode_verifier: true,
         print_diags_to_stderr: false,
+        lint: false,
     }
     .build(sui_system_path)
     .unwrap();
@@ -148,6 +152,7 @@ fn build_packages_with_move_config(
         config,
         run_bytecode_verifier: true,
         print_diags_to_stderr: false,
+        lint: false,
     }
     .build(deepbook_path)
     .unwrap();

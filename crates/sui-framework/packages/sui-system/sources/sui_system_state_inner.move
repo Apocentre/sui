@@ -14,6 +14,7 @@ module sui_system::sui_system_state_inner {
     use sui_system::validator_cap::{Self, UnverifiedValidatorOperationCap, ValidatorOperationCap};
     use sui_system::stake_subsidy::{Self, StakeSubsidy};
     use sui_system::storage_fund::{Self, StorageFund};
+    use sui_system::staking_pool::PoolTokenExchangeRate;
     use sui::vec_map::{Self, VecMap};
     use sui::vec_set::{Self, VecSet};
     use std::option;
@@ -223,6 +224,7 @@ module sui_system::sui_system_state_inner {
     // Errors
     const ENotValidator: u64 = 0;
     const ELimitExceeded: u64 = 1;
+    #[allow(unused_const)]
     const ENotSystemAddress: u64 = 2;
     const ECannotReportOneself: u64 = 3;
     const EReportRecordNotFound: u64 = 4;
@@ -416,7 +418,7 @@ module sui_system::sui_system_state_inner {
     /// epoch has already reached the maximum.
     public(friend) fun request_add_validator(
         self: &mut SuiSystemStateInnerV2,
-        ctx: &mut TxContext,
+        ctx: &TxContext,
     ) {
         assert!(
             validator_set::next_epoch_validator_count(&self.validators) < self.parameters.max_validator_count,
@@ -433,7 +435,7 @@ module sui_system::sui_system_state_inner {
     /// of the validator.
     public(friend) fun request_remove_validator(
         self: &mut SuiSystemStateInnerV2,
-        ctx: &mut TxContext,
+        ctx: &TxContext,
     ) {
         // Only check min validator condition if the current number of validators satisfy the constraint.
         // This is so that if we somehow already are in a state where we have less than min validators, it no longer matters
@@ -482,7 +484,7 @@ module sui_system::sui_system_state_inner {
     public(friend) fun request_set_commission_rate(
         self: &mut SuiSystemStateInnerV2,
         new_commission_rate: u64,
-        ctx: &mut TxContext,
+        ctx: &TxContext,
     ) {
         validator_set::request_set_commission_rate(
             &mut self.validators,
@@ -495,7 +497,7 @@ module sui_system::sui_system_state_inner {
     public(friend) fun set_candidate_validator_commission_rate(
         self: &mut SuiSystemStateInnerV2,
         new_commission_rate: u64,
-        ctx: &mut TxContext,
+        ctx: &TxContext,
     ) {
         let candidate = validator_set::get_validator_mut_with_ctx_including_candidates(&mut self.validators, ctx);
         validator::set_candidate_commission_rate(candidate, new_commission_rate)
@@ -507,13 +509,13 @@ module sui_system::sui_system_state_inner {
         stake: Coin<SUI>,
         validator_address: address,
         ctx: &mut TxContext,
-    ) {
+    ) : StakedSui {
         validator_set::request_add_stake(
             &mut self.validators,
             validator_address,
             coin::into_balance(stake),
             ctx,
-        );
+        )
     }
 
     /// Add stake to a validator's staking pool using multiple coins.
@@ -523,24 +525,24 @@ module sui_system::sui_system_state_inner {
         stake_amount: option::Option<u64>,
         validator_address: address,
         ctx: &mut TxContext,
-    ) {
+    ) : StakedSui {
         let balance = extract_coin_balance(stakes, stake_amount, ctx);
-        validator_set::request_add_stake(&mut self.validators, validator_address, balance, ctx);
+        validator_set::request_add_stake(&mut self.validators, validator_address, balance, ctx)
     }
 
     /// Withdraw some portion of a stake from a validator's staking pool.
     public(friend) fun request_withdraw_stake(
         self: &mut SuiSystemStateInnerV2,
         staked_sui: StakedSui,
-        ctx: &mut TxContext,
-    ) {
+        ctx: &TxContext,
+    ) : Balance<SUI> {
         assert!(
             stake_activation_epoch(&staked_sui) <= tx_context::epoch(ctx),
             EStakeWithdrawBeforeActivation
         );
         validator_set::request_withdraw_stake(
             &mut self.validators, staked_sui, ctx,
-        );
+        )
     }
 
     /// Report a validator as a bad or non-performant actor in the system.
@@ -1038,6 +1040,19 @@ module sui_system::sui_system_state_inner {
         storage_fund::total_object_storage_rebates(&self.storage_fund)
     }
 
+    public(friend) fun pool_exchange_rates(
+        self: &mut SuiSystemStateInnerV2,
+        pool_id: &ID
+    ): &Table<u64, PoolTokenExchangeRate>  {
+        let validators = &mut self.validators;
+        validator_set::pool_exchange_rates(validators, pool_id)
+    }
+
+    public(friend) fun active_validator_addresses(self: &SuiSystemStateInnerV2): vector<address> {
+        let validator_set = &self.validators;
+        validator_set::active_validator_addresses(validator_set)
+    }
+
     /// Extract required Balance from vector of Coin<SUI>, transfer the remainder back to sender.
     fun extract_coin_balance(coins: vector<Coin<SUI>>, amount: option::Option<u64>, ctx: &mut TxContext): Balance<SUI> {
         let merged_coin = vector::pop_back(&mut coins);
@@ -1098,7 +1113,7 @@ module sui_system::sui_system_state_inner {
     public(friend) fun request_add_validator_for_testing(
         self: &mut SuiSystemStateInnerV2,
         min_joining_stake_for_testing: u64,
-        ctx: &mut TxContext,
+        ctx: &TxContext,
     ) {
         assert!(
             validator_set::next_epoch_validator_count(&self.validators) < self.parameters.max_validator_count,

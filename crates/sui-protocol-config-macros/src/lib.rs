@@ -15,7 +15,10 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 ///     pub fn new_constant(&self) -> u64 {
 ///         self.new_constant.expect(Self::CONSTANT_ERR_MSG)
 ///     }
-///
+///     /// Returns the value of the field if exists at the given version, otherise None.
+///     pub fn new_constant_as_option(&self) -> Option<u64> {
+///         self.new_constant
+///     }
 ///     // We auto derive an enum such that the variants are all the types of the fields
 ///     pub enum ProtocolConfigValue {
 ///        u32(u32),
@@ -36,13 +39,13 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 ///     /// Returns a map of all features to values
 ///     pub fn feature_map(&self) -> std::collections::BTreeMap<String, bool>;
 /// ```
-#[proc_macro_derive(ProtocolConfigGetters)]
-pub fn getters_macro(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(ProtocolConfigAccessors)]
+pub fn accessors_macro(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
 
     let struct_name = &ast.ident;
     let data = &ast.data;
-    let mut seen_types = std::collections::HashSet::new();
+    let mut inner_types = vec![];
 
     let tokens = match data {
         Data::Struct(data_struct) => match &data_struct.fields {
@@ -76,12 +79,49 @@ pub fn getters_macro(input: TokenStream) -> TokenStream {
                             panic!("Expected angle bracketed arguments.");
                         };
 
+                        let as_option_name = format!("{field_name}_as_option");
+                        let as_option_name: proc_macro2::TokenStream =
+                        as_option_name.parse().unwrap();
+                        let test_setter_name: proc_macro2::TokenStream =
+                            format!("set_{field_name}_for_testing").parse().unwrap();
+                        let test_un_setter_name: proc_macro2::TokenStream =
+                            format!("disable_{field_name}_for_testing").parse().unwrap();
+                        let test_setter_from_str_name: proc_macro2::TokenStream =
+                            format!("set_{field_name}_from_str_for_testing").parse().unwrap();
+
                         let getter = quote! {
                             // Derive the getter
                             pub fn #field_name(&self) -> #inner_type {
                                 self.#field_name.expect(Self::CONSTANT_ERR_MSG)
                             }
+
+                            pub fn #as_option_name(&self) -> #field_type {
+                                self.#field_name
+                            }
                         };
+
+                        let test_setter = quote! {
+                            // Derive the setter
+                            pub fn #test_setter_name(&mut self, val: #inner_type) {
+                                self.#field_name = Some(val);
+                            }
+
+                            // Derive the setter from String
+                            pub fn #test_setter_from_str_name(&mut self, val: String) {
+                                use std::str::FromStr;
+                                self.#test_setter_name(#inner_type::from_str(&val).unwrap());
+                            }
+
+                            // Derive the un-setter
+                            pub fn #test_un_setter_name(&mut self) {
+                                self.#field_name = None;
+                            }
+                        };
+
+                        let value_setter = quote! {
+                            stringify!(#field_name) => self.#test_setter_from_str_name(val),
+                        };
+
 
                         let value_lookup = quote! {
                             stringify!(#field_name) => self.#field_name.map(|v| ProtocolConfigValue::#inner_type(v)),
@@ -92,16 +132,16 @@ pub fn getters_macro(input: TokenStream) -> TokenStream {
                         };
 
                         // Track all the types seen
-                        if seen_types.contains(&inner_type) {
+                        if inner_types.contains(&inner_type) {
                             None
                         } else {
-                            seen_types.insert(inner_type.clone());
+                            inner_types.push(inner_type.clone());
                             Some(quote! {
                                #inner_type
                             })
                         };
 
-                        Some((getter, (value_lookup, field_name_str)))
+                        Some(((getter, (test_setter, value_setter)), (value_lookup, field_name_str)))
                     }
                     _ => None,
                 }
@@ -110,9 +150,12 @@ pub fn getters_macro(input: TokenStream) -> TokenStream {
         },
         _ => panic!("Only structs supported."),
     };
-    let (getters, (value_lookup, field_names_str)): (Vec<_>, (Vec<_>, Vec<_>)) = tokens.unzip();
-    let inner_types1 = Vec::from_iter(seen_types);
-    let inner_types2: Vec<_> = inner_types1.clone();
+
+    #[allow(clippy::type_complexity)]
+    let ((getters, (test_setters, value_setters)), (value_lookup, field_names_str)): (
+        (Vec<_>, (Vec<_>, Vec<_>)),
+        (Vec<_>, Vec<_>),
+    ) = tokens.unzip();
     let output = quote! {
         // For each getter, expand it out into a function in the impl block
         impl #struct_name {
@@ -144,10 +187,22 @@ pub fn getters_macro(input: TokenStream) -> TokenStream {
             }
         }
 
+        // For each attr, derive a setter from the raw value and from string repr
+        impl #struct_name {
+            #(#test_setters)*
+
+            pub fn set_attr_for_testing(&mut self, attr: String, val: String) {
+                match attr.as_str() {
+                    #(#value_setters)*
+                    _ => panic!("Attempting to set unknown attribute: {}", attr),
+                }
+            }
+        }
+
         #[allow(non_camel_case_types)]
         #[derive(Clone, Serialize, Debug, PartialEq, Deserialize, schemars::JsonSchema)]
         pub enum ProtocolConfigValue {
-            #(#inner_types1(#inner_types1),)*
+            #(#inner_types(#inner_types),)*
         }
 
         impl std::fmt::Display for ProtocolConfigValue {
@@ -156,7 +211,7 @@ pub fn getters_macro(input: TokenStream) -> TokenStream {
                 let mut writer = String::new();
                 match self {
                     #(
-                        ProtocolConfigValue::#inner_types2(x) => {
+                        ProtocolConfigValue::#inner_types(x) => {
                             write!(writer, "{}", x)?;
                         }
                     )*

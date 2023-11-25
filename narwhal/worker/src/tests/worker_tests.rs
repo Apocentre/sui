@@ -6,22 +6,24 @@ use crate::LocalNarwhalClient;
 use crate::{metrics::initialise_metrics, TrivialTransactionValidator};
 use async_trait::async_trait;
 use bytes::Bytes;
-use consensus::consensus::ConsensusRound;
-use consensus::{dag::Dag, metrics::ConsensusMetrics};
+use config::ChainIdentifier;
 use fastcrypto::{
     encoding::{Encoding, Hex},
     hash::Hash,
 };
 use futures::stream::FuturesOrdered;
 use futures::StreamExt;
-use primary::{NetworkModel, Primary, CHANNEL_CAPACITY, NUM_SHUTDOWN_RECEIVERS};
+use primary::consensus::{ConsensusRound, LeaderSchedule, LeaderSwapTable};
+use primary::{Primary, CHANNEL_CAPACITY, NUM_SHUTDOWN_RECEIVERS};
 use prometheus::Registry;
 use std::time::Duration;
 use storage::NodeStorage;
 use store::rocks;
 use store::rocks::MetricConf;
 use store::rocks::ReadWriteOptions;
-use test_utils::{batch, temp_dir, test_network, transaction, CommitteeFixture};
+use test_utils::{
+    batch, latest_protocol_version, temp_dir, test_network, transaction, CommitteeFixture,
+};
 use tokio::sync::watch;
 use types::{
     BatchAPI, MockWorkerToPrimary, MockWorkerToWorker, PreSubscribedBroadcastSender,
@@ -38,7 +40,11 @@ impl TransactionValidator for NilTxValidator {
     fn validate(&self, _tx: &[u8]) -> Result<(), Self::Error> {
         eyre::bail!("Invalid transaction");
     }
-    async fn validate_batch(&self, _txs: &Batch) -> Result<(), Self::Error> {
+    async fn validate_batch(
+        &self,
+        _txs: &Batch,
+        _protocol_config: &ProtocolConfig,
+    ) -> Result<(), Self::Error> {
         eyre::bail!("Invalid batch");
     }
 }
@@ -82,6 +88,7 @@ async fn reject_invalid_clients_transactions() {
         worker_id,
         committee.clone(),
         worker_cache.clone(),
+        latest_protocol_version(),
         parameters,
         NilTxValidator,
         client,
@@ -111,7 +118,7 @@ async fn reject_invalid_clients_transactions() {
 
     let worker_pk = worker_cache.worker(&public_key, &worker_id).unwrap().name;
 
-    let batch = batch();
+    let batch = batch(&latest_protocol_version());
     let batch_message = WorkerBatchMessage {
         batch: batch.clone(),
     };
@@ -177,8 +184,9 @@ async fn handle_remote_clients_transactions() {
         worker_id,
         committee.clone(),
         worker_cache.clone(),
+        latest_protocol_version(),
         parameters,
-        TrivialTransactionValidator::default(),
+        TrivialTransactionValidator,
         client.clone(),
         batch_store,
         metrics,
@@ -189,13 +197,13 @@ async fn handle_remote_clients_transactions() {
     let mut peer_networks = Vec::new();
 
     // Create batches
-    let batch = batch();
+    let batch = batch(&latest_protocol_version());
     let batch_digest = batch.digest();
 
     let (tx_await_batch, mut rx_await_batch) = test_utils::test_channel!(CHANNEL_CAPACITY);
     let mut mock_primary_server = MockWorkerToPrimary::new();
     mock_primary_server
-        .expect_report_our_batch()
+        .expect_report_own_batch()
         .withf(move |request| {
             let message = request.body();
 
@@ -295,8 +303,9 @@ async fn handle_local_clients_transactions() {
         worker_id,
         committee.clone(),
         worker_cache.clone(),
+        latest_protocol_version(),
         parameters,
-        TrivialTransactionValidator::default(),
+        TrivialTransactionValidator,
         client.clone(),
         batch_store,
         metrics,
@@ -307,13 +316,13 @@ async fn handle_local_clients_transactions() {
     let mut peer_networks = Vec::new();
 
     // Create batches
-    let batch = batch();
+    let batch = batch(&latest_protocol_version());
     let batch_digest = batch.digest();
 
     let (tx_await_batch, mut rx_await_batch) = test_utils::test_channel!(CHANNEL_CAPACITY);
     let mut mock_primary_server = MockWorkerToPrimary::new();
     mock_primary_server
-        .expect_report_our_batch()
+        .expect_report_own_batch()
         .withf(move |request| {
             let message = request.body();
             message.digest == batch_digest && message.worker_id == worker_id
@@ -386,13 +395,12 @@ async fn get_network_peers_from_admin_server() {
     // Make the data store.
     let store = NodeStorage::reopen(temp_dir(), None);
 
-    let (tx_new_certificates, rx_new_certificates) =
+    let (tx_new_certificates, _rx_new_certificates) =
         test_utils::test_new_certificates_channel!(CHANNEL_CAPACITY);
     let (tx_feedback, rx_feedback) = test_utils::test_channel!(CHANNEL_CAPACITY);
     let (_tx_consensus_round_updates, rx_consensus_round_updates) =
         watch::channel(ConsensusRound::default());
     let mut tx_shutdown = PreSubscribedBroadcastSender::new(NUM_SHUTDOWN_RECEIVERS);
-    let consensus_metrics = Arc::new(ConsensusMetrics::new(&Registry::new()));
 
     // Spawn Primary 1
     Primary::spawn(
@@ -401,9 +409,10 @@ async fn get_network_peers_from_admin_server() {
         authority_1.network_keypair().copy(),
         committee.clone(),
         worker_cache.clone(),
+        ChainIdentifier::unknown(),
+        latest_protocol_version(),
         primary_1_parameters.clone(),
         client_1.clone(),
-        store.header_store.clone(),
         store.certificate_store.clone(),
         store.proposer_store.clone(),
         store.payload_store.clone(),
@@ -411,20 +420,10 @@ async fn get_network_peers_from_admin_server() {
         tx_new_certificates,
         rx_feedback,
         rx_consensus_round_updates,
-        /* dag */
-        Some(Arc::new(
-            Dag::new(
-                &committee,
-                rx_new_certificates,
-                consensus_metrics,
-                tx_shutdown.subscribe(),
-            )
-            .1,
-        )),
-        NetworkModel::Asynchronous,
         &mut tx_shutdown,
         tx_feedback,
         &Registry::new(),
+        LeaderSchedule::new(committee.clone(), LeaderSwapTable::default()),
     );
 
     // Wait for tasks to start
@@ -446,8 +445,9 @@ async fn get_network_peers_from_admin_server() {
         worker_id,
         committee.clone(),
         worker_cache.clone(),
+        latest_protocol_version(),
         worker_1_parameters.clone(),
-        TrivialTransactionValidator::default(),
+        TrivialTransactionValidator,
         client_1.clone(),
         store.batch_store.clone(),
         metrics_1.clone(),
@@ -495,7 +495,7 @@ async fn get_network_peers_from_admin_server() {
     assert_eq!(1, resp.len());
 
     // Assert peer ids are correct
-    let expected_peer_ids = vec![&primary_1_peer_id];
+    let expected_peer_ids = [&primary_1_peer_id];
     assert!(expected_peer_ids.iter().all(|e| resp.contains(e)));
 
     let authority_2 = fixture.authorities().nth(1).unwrap();
@@ -509,14 +509,13 @@ async fn get_network_peers_from_admin_server() {
         ..Parameters::default()
     };
 
-    let (tx_new_certificates_2, rx_new_certificates_2) =
+    let (tx_new_certificates_2, _rx_new_certificates_2) =
         test_utils::test_new_certificates_channel!(CHANNEL_CAPACITY);
     let (tx_feedback_2, rx_feedback_2) = test_utils::test_channel!(CHANNEL_CAPACITY);
     let (_tx_consensus_round_updates, rx_consensus_round_updates) =
         watch::channel(ConsensusRound::default());
 
     let mut tx_shutdown_2 = PreSubscribedBroadcastSender::new(NUM_SHUTDOWN_RECEIVERS);
-    let consensus_metrics = Arc::new(ConsensusMetrics::new(&Registry::new()));
 
     // Spawn Primary 2
     Primary::spawn(
@@ -525,9 +524,10 @@ async fn get_network_peers_from_admin_server() {
         authority_2.network_keypair().copy(),
         committee.clone(),
         worker_cache.clone(),
+        ChainIdentifier::unknown(),
+        latest_protocol_version(),
         primary_2_parameters.clone(),
         client_2.clone(),
-        store.header_store.clone(),
         store.certificate_store.clone(),
         store.proposer_store.clone(),
         store.payload_store.clone(),
@@ -535,20 +535,10 @@ async fn get_network_peers_from_admin_server() {
         tx_new_certificates_2,
         rx_feedback_2,
         rx_consensus_round_updates,
-        /* dag */
-        Some(Arc::new(
-            Dag::new(
-                &committee,
-                rx_new_certificates_2,
-                consensus_metrics,
-                tx_shutdown.subscribe(),
-            )
-            .1,
-        )),
-        NetworkModel::Asynchronous,
         &mut tx_shutdown_2,
         tx_feedback_2,
         &Registry::new(),
+        LeaderSchedule::new(committee.clone(), LeaderSwapTable::default()),
     );
 
     // Wait for tasks to start
@@ -571,8 +561,9 @@ async fn get_network_peers_from_admin_server() {
         worker_id,
         committee.clone(),
         worker_cache.clone(),
+        latest_protocol_version(),
         worker_2_parameters.clone(),
-        TrivialTransactionValidator::default(),
+        TrivialTransactionValidator,
         client_2,
         store.batch_store,
         metrics_2.clone(),
@@ -621,7 +612,7 @@ async fn get_network_peers_from_admin_server() {
     assert_eq!(3, resp.len());
 
     // Assert peer ids are correct
-    let expected_peer_ids = vec![&primary_1_peer_id, &primary_2_peer_id, &worker_2_peer_id];
+    let expected_peer_ids = [&primary_1_peer_id, &primary_2_peer_id, &worker_2_peer_id];
     assert!(expected_peer_ids.iter().all(|e| resp.contains(e)));
 
     // Test getting all connected peers for worker 2 (worker at index 0 for primary 2)
@@ -642,7 +633,7 @@ async fn get_network_peers_from_admin_server() {
     assert_eq!(3, resp.len());
 
     // Assert peer ids are correct
-    let expected_peer_ids = vec![&primary_1_peer_id, &primary_2_peer_id, &worker_1_peer_id];
+    let expected_peer_ids = [&primary_1_peer_id, &primary_2_peer_id, &worker_1_peer_id];
     assert!(expected_peer_ids.iter().all(|e| resp.contains(e)));
 
     // Assert network connectivity metrics are also set as expected

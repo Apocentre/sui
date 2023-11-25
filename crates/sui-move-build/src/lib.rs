@@ -1,6 +1,9 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+#[macro_use(sp)]
+extern crate move_ir_types;
+
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     io::Write,
@@ -16,12 +19,12 @@ use move_binary_format::{
 };
 use move_bytecode_utils::{layout::SerdeLayoutBuilder, module_cache::GetModule};
 use move_compiler::{
-    compiled_unit::{
-        AnnotatedCompiledModule, AnnotatedCompiledScript, CompiledUnitEnum, NamedCompiledModule,
-    },
+    cfgir::visitor::AbstractInterpreterVisitor,
+    compiled_unit::AnnotatedCompiledModule,
     diagnostics::{report_diagnostics_to_color_buffer, report_warnings},
     expansion::ast::{AttributeName_, Attributes},
     shared::known_attributes::KnownAttribute,
+    typing::visitor::TypingVisitor,
 };
 use move_core_types::{
     account_address::AccountAddress,
@@ -40,7 +43,6 @@ use move_package::{
 };
 use move_symbol_pool::Symbol;
 use serde_reflection::Registry;
-use sui_protocol_config::{ProtocolConfig, ProtocolVersion};
 use sui_types::{
     base_types::ObjectID,
     error::{SuiError, SuiResult},
@@ -50,9 +52,18 @@ use sui_types::{
 };
 use sui_verifier::verifier as sui_bytecode_verifier;
 
+use crate::linters::{
+    coin_field::CoinFieldVisitor, collection_equality::CollectionEqualityVisitor,
+    custom_state_change::CustomStateChangeVerifier, freeze_wrapped::FreezeWrappedVisitor,
+    known_filters, self_transfer::SelfTransferVerifier, share_owned::ShareOwnedVerifier,
+    LINT_WARNING_PREFIX,
+};
+
 #[cfg(test)]
 #[path = "unit_tests/build_tests.rs"]
 mod build_tests;
+
+pub mod linters;
 
 /// Wrapper around the core Move `CompiledPackage` with some Sui-specific traits and info
 #[derive(Debug)]
@@ -74,6 +85,8 @@ pub struct BuildConfig {
     pub run_bytecode_verifier: bool,
     /// If true, print build diagnostics to stderr--no printing if false
     pub print_diags_to_stderr: bool,
+    /// If true, run linters
+    pub lint: bool,
 }
 
 impl BuildConfig {
@@ -93,21 +106,14 @@ impl BuildConfig {
             .any(|(_, name, _)| matches!(name, AttributeName_::Known(KnownAttribute::Testing(_))))
     }
 
-    fn fn_info(
-        units: &[CompiledUnitEnum<AnnotatedCompiledModule, AnnotatedCompiledScript>],
-    ) -> FnInfoMap {
+    fn fn_info(units: &[AnnotatedCompiledModule]) -> FnInfoMap {
         let mut fn_info_map = BTreeMap::new();
         for u in units {
-            match u {
-                CompiledUnitEnum::Module(m) => {
-                    let mod_addr = m.named_module.address.into_inner();
-                    for (_, s, info) in &m.function_infos {
-                        let fn_name = s.as_str().to_string();
-                        let is_test = Self::is_test(&info.attributes);
-                        fn_info_map.insert(FnInfoKey { fn_name, mod_addr }, FnInfo { is_test });
-                    }
-                }
-                CompiledUnitEnum::Script(_) => continue,
+            let mod_addr = u.named_module.address.into_inner();
+            for (_, s, info) in &u.function_infos {
+                let fn_name = s.as_str().to_string();
+                let is_test = Self::is_test(&info.attributes);
+                fn_info_map.insert(FnInfoKey { fn_name, mod_addr }, FnInfo { is_test });
             }
         }
 
@@ -116,23 +122,58 @@ impl BuildConfig {
 
     fn compile_package<W: Write>(
         resolution_graph: ResolvedGraph,
+        lint: bool,
         writer: &mut W,
     ) -> anyhow::Result<(MoveCompiledPackage, FnInfoMap)> {
         let build_plan = BuildPlan::create(resolution_graph)?;
         let mut fn_info = None;
         let compiled_pkg = build_plan.compile_with_driver(writer, |compiler| {
-            let (files, units_res) = compiler.build()?;
+            let (files, units_res) = if lint {
+                let lint_visitors = vec![
+                    ShareOwnedVerifier.visitor(),
+                    SelfTransferVerifier.visitor(),
+                    CustomStateChangeVerifier.visitor(),
+                    CoinFieldVisitor.visitor(),
+                    FreezeWrappedVisitor.visitor(),
+                    CollectionEqualityVisitor.visitor(),
+                ];
+                let (filter_attr_name, filters) = known_filters();
+                compiler
+                    .add_visitors(lint_visitors)
+                    .add_custom_known_filters(filters, filter_attr_name)
+                    .build()?
+            } else {
+                compiler.build()?
+            };
             match units_res {
                 Ok((units, warning_diags)) => {
+                    let any_linter_warnings = warning_diags.any_with_prefix(LINT_WARNING_PREFIX);
+                    let (filtered_diags_num, filtered_categories) =
+                        warning_diags.filtered_source_diags_with_prefix(LINT_WARNING_PREFIX);
                     report_warnings(&files, warning_diags);
+                    if any_linter_warnings {
+                        eprintln!("Please report feedback on the linter warnings at https://forums.sui.io\n");
+                    }
+                    if filtered_diags_num > 0 {
+                        eprintln!("Total number of linter warnings suppressed: {filtered_diags_num} (filtered categories: {filtered_categories})");
+                    }
                     fn_info = Some(Self::fn_info(&units));
                     Ok((files, units))
                 }
                 Err(error_diags) => {
                     assert!(!error_diags.is_empty());
+                    let any_linter_warnings = error_diags.any_with_prefix(LINT_WARNING_PREFIX);
+                    let (filtered_diags_num, filtered_categories) =
+                        error_diags.filtered_source_diags_with_prefix(LINT_WARNING_PREFIX);
                     let diags_buf = report_diagnostics_to_color_buffer(&files, error_diags);
-                    if let Err(err) = std::io::stdout().write_all(&diags_buf) {
+                    if let Err(err) = std::io::stderr().write_all(&diags_buf) {
                         anyhow::bail!("Cannot output compiler diagnostics: {}", err);
+                    }
+                    if any_linter_warnings {
+                        eprintln!("Please report feedback on the linter warnings at https://forums.sui.io\n");
+                    }
+                    if filtered_diags_num > 0 {
+                        eprintln!("Total number of linter warnings suppressed: {filtered_diags_num} (filtered categories: {filtered_categories})");
                     }
                     anyhow::bail!("Compilation error");
                 }
@@ -144,6 +185,7 @@ impl BuildConfig {
     /// Given a `path` and a `build_config`, build the package in that path, including its dependencies.
     /// If we are building the Sui framework, we skip the check that the addresses should be 0
     pub fn build(self, path: PathBuf) -> SuiResult<CompiledPackage> {
+        let lint = self.lint;
         let print_diags_to_stderr = self.print_diags_to_stderr;
         let run_bytecode_verifier = self.run_bytecode_verifier;
         let resolution_graph = self.resolution_graph(&path)?;
@@ -152,10 +194,24 @@ impl BuildConfig {
             resolution_graph,
             run_bytecode_verifier,
             print_diags_to_stderr,
+            lint,
         )
     }
 
-    pub fn resolution_graph(self, path: &Path) -> SuiResult<ResolvedGraph> {
+    pub fn resolution_graph(mut self, path: &Path) -> SuiResult<ResolvedGraph> {
+        use move_compiler::editions::Flavor;
+
+        let flavor = self.config.default_flavor.get_or_insert(Flavor::Sui);
+        if flavor != &Flavor::Sui {
+            return Err(SuiError::ModuleBuildFailure {
+                error: format!(
+                    "The flavor of the Move compiler cannot be overridden with anything but \
+                        \"{}\", but the default override was set to: \"{flavor}\"",
+                    Flavor::Sui,
+                ),
+            });
+        }
+
         if self.print_diags_to_stderr {
             self.config
                 .resolution_graph_for_package(path, &mut std::io::stderr())
@@ -174,13 +230,14 @@ pub fn build_from_resolution_graph(
     resolution_graph: ResolvedGraph,
     run_bytecode_verifier: bool,
     print_diags_to_stderr: bool,
+    lint: bool,
 ) -> SuiResult<CompiledPackage> {
     let (published_at, dependency_ids) = gather_published_ids(&resolution_graph);
 
     let result = if print_diags_to_stderr {
-        BuildConfig::compile_package(resolution_graph, &mut std::io::stderr())
+        BuildConfig::compile_package(resolution_graph, lint, &mut std::io::stderr())
     } else {
-        BuildConfig::compile_package(resolution_graph, &mut std::io::sink())
+        BuildConfig::compile_package(resolution_graph, lint, &mut std::io::sink())
     };
     // write build failure diagnostics to stderr, convert `error` to `String` using `Debug`
     // format to include anyhow's error context chain.
@@ -200,12 +257,7 @@ pub fn build_from_resolution_graph(
                     error: err.to_string(),
                 }
             })?;
-            // TODO make this configurable
-            sui_bytecode_verifier::sui_verify_module_unmetered(
-                &ProtocolConfig::get_for_version(ProtocolVersion::MAX),
-                m,
-                &fn_info,
-            )?;
+            sui_bytecode_verifier::sui_verify_module_unmetered(m, &fn_info)?;
         }
         // TODO(https://github.com/MystenLabs/sui/issues/69): Run Move linker
     }
@@ -222,10 +274,7 @@ impl CompiledPackage {
     /// Note: these are not topologically sorted by dependency--use `get_dependency_sorted_modules` to produce a list of modules suitable
     /// for publishing or static analysis
     pub fn get_modules(&self) -> impl Iterator<Item = &CompiledModule> {
-        self.package.root_modules().map(|m| match &m.unit {
-            CompiledUnitEnum::Module(m) => &m.module,
-            CompiledUnitEnum::Script(_) => unimplemented!("Scripts not supported in Sui Move"),
-        })
+        self.package.root_modules().map(|m| &m.unit.module)
     }
 
     /// Return all of the bytecode modules in this package (not including direct or transitive deps)
@@ -235,10 +284,7 @@ impl CompiledPackage {
         self.package
             .root_compiled_units
             .into_iter()
-            .map(|m| match m.unit {
-                CompiledUnitEnum::Module(m) => m.module,
-                CompiledUnitEnum::Script(_) => unimplemented!("Scripts not supported in Sui Move"),
-            })
+            .map(|m| m.unit.module)
             .collect()
     }
 
@@ -248,19 +294,13 @@ impl CompiledPackage {
         self.package
             .deps_compiled_units
             .iter()
-            .map(|(_, m)| match &m.unit {
-                CompiledUnitEnum::Module(m) => &m.module,
-                CompiledUnitEnum::Script(_) => unimplemented!("Scripts not supported in Sui Move"),
-            })
+            .map(|(_, m)| &m.unit.module)
     }
 
     /// Return all of the bytecode modules in this package and the modules of its direct and transitive dependencies.
     /// Note: these are not topologically sorted by dependency.
     pub fn get_modules_and_deps(&self) -> impl Iterator<Item = &CompiledModule> {
-        self.package.all_modules().map(|m| match &m.unit {
-            CompiledUnitEnum::Module(m) => &m.module,
-            CompiledUnitEnum::Script(_) => unimplemented!("Scripts not supported in Sui Move"),
-        })
+        self.package.all_modules().map(|m| &m.unit.module)
     }
 
     /// Return the bytecode modules in this package, topologically sorted in dependency order.
@@ -311,10 +351,7 @@ impl CompiledPackage {
             .package
             .deps_compiled_units
             .iter()
-            .map(|(_, m)| match &m.unit {
-                CompiledUnitEnum::Module(m) => ObjectID::from(*m.module.address()),
-                CompiledUnitEnum::Script(_) => unimplemented!("Scripts not supported in Sui Move"),
-            })
+            .map(|(_, m)| ObjectID::from(*m.unit.module.address()))
             .collect();
 
         // `0x0` is not a real dependency ID -- it means that the package has unpublished
@@ -323,7 +360,8 @@ impl CompiledPackage {
         ids.into_iter().collect()
     }
 
-    pub fn get_package_digest(&self, with_unpublished_deps: bool, hash_modules: bool) -> [u8; 32] {
+    pub fn get_package_digest(&self, with_unpublished_deps: bool) -> [u8; 32] {
+        let hash_modules = true;
         MovePackage::compute_digest_for_modules_and_deps(
             &self.get_package_bytes(with_unpublished_deps),
             self.dependency_ids.published.values(),
@@ -453,7 +491,7 @@ impl CompiledPackage {
     pub fn is_system_package(&self) -> bool {
         // System packages always have "published-at" addresses
         let Ok(published_at) = self.published_at else {
-            return false
+            return false;
         };
 
         is_system_package(published_at)
@@ -462,17 +500,13 @@ impl CompiledPackage {
     /// Checks for root modules with non-zero package addresses.  Returns an arbitrary one, if one
     /// can can be found, otherwise returns `None`.
     pub fn published_root_module(&self) -> Option<&CompiledModule> {
-        self.package
-            .root_compiled_units
-            .iter()
-            .find_map(|unit| match &unit.unit {
-                CompiledUnitEnum::Module(NamedCompiledModule { module, .. })
-                    if module.self_id().address() != &AccountAddress::ZERO =>
-                {
-                    Some(module)
-                }
-                _ => None,
-            })
+        self.package.root_compiled_units.iter().find_map(|unit| {
+            if unit.unit.module.self_id().address() != &AccountAddress::ZERO {
+                Some(&unit.unit.module)
+            } else {
+                None
+            }
+        })
     }
 
     pub fn verify_unpublished_dependencies(
@@ -488,23 +522,16 @@ impl CompiledPackage {
             .deps_compiled_units
             .iter()
             .filter_map(|(p, m)| {
-                if !unpublished_deps.contains(p) {
+                if !unpublished_deps.contains(p) || m.unit.module.address() == &AccountAddress::ZERO
+                {
                     return None;
                 }
-                match &m.unit {
-                    CompiledUnitEnum::Module(m) if m.module.address() != &AccountAddress::ZERO => {
-                        Some(format!(
-                            " - {}::{} in dependency {}",
-                            m.module.address(),
-                            m.name,
-                            p
-                        ))
-                    }
-                    CompiledUnitEnum::Module(_) => None,
-                    CompiledUnitEnum::Script(_) => {
-                        unimplemented!("Scripts are not supported in Sui Move")
-                    }
-                }
+                Some(format!(
+                    " - {}::{} in dependency {}",
+                    m.unit.module.address(),
+                    m.unit.name,
+                    p
+                ))
             })
             .collect::<Vec<String>>();
 
@@ -537,10 +564,15 @@ impl CompiledPackage {
 
 impl Default for BuildConfig {
     fn default() -> Self {
+        let config = MoveBuildConfig {
+            default_flavor: Some(move_compiler::editions::Flavor::Sui),
+            ..MoveBuildConfig::default()
+        };
         BuildConfig {
-            config: MoveBuildConfig::default(),
+            config,
             run_bytecode_verifier: true,
             print_diags_to_stderr: false,
+            lint: false,
         }
     }
 }

@@ -1,6 +1,7 @@
 # IDE
 **/.history/
 **/.vscode/
+**/.idea/
 
 # OSX
 .DS_Store
@@ -11,7 +12,8 @@
 
 # Move build directory
 build
-storage/
+storage
+!crates/sui-types/src/storage
 !narwhal/storage
 
 # Move-related files
@@ -47,6 +49,7 @@ next-env.d.ts
 
 # App test artifacts
 coverage/
+test-results/
 playwright-report/
 playwright/.cache/
 

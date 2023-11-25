@@ -1,52 +1,64 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
-
-import { useFormatCoin } from '@mysten/core';
-import cl from 'classnames';
-import { memo, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-
-import { CoinItem } from '_components/active-coins-card/CoinItem';
-
-import st from './CoinBalance.module.scss';
+import { useIsWalletDefiEnabled } from '_app/hooks/useIsWalletDefiEnabled';
+import { useAppSelector } from '_hooks';
+import { API_ENV } from '_shared/api-env';
+import { Heading } from '_src/ui/app/shared/heading';
+import { Text } from '_src/ui/app/shared/text';
+import { useFormatCoin, useSuiCoinData } from '@mysten/core';
+import { SUI_DECIMALS } from '@mysten/sui.js/utils';
+import BigNumber from 'bignumber.js';
+import { useMemo } from 'react';
 
 export type CoinProps = {
-    type: string;
-    balance: bigint;
-    hideStake?: boolean;
-    mode?: 'row-item' | 'standalone';
+	type: string;
+	amount: bigint;
 };
 
-function CoinBalance({ type, balance, mode = 'row-item' }: CoinProps) {
-    const [formatted, symbol] = useFormatCoin(balance, type);
-    const navigate = useNavigate();
+function WalletBalanceUsd({ amount: walletBalance }: { amount: bigint }) {
+	const isDefiWalletEnabled = useIsWalletDefiEnabled();
+	const { data } = useSuiCoinData();
+	const { currentPrice } = data || {};
 
-    // TODO: use a different logic to differentiate between view types
-    const coinDetail = useCallback(() => {
-        if (mode !== 'row-item') return;
+	const walletBalanceInUsd = useMemo(() => {
+		if (!currentPrice) return null;
+		const suiPriceInUsd = new BigNumber(currentPrice);
+		const walletBalanceInSui = new BigNumber(walletBalance.toString()).shiftedBy(-1 * SUI_DECIMALS);
+		const value = walletBalanceInSui.multipliedBy(suiPriceInUsd).toNumber();
 
-        navigate(`/send?type=${encodeURIComponent(type)}`);
-    }, [mode, navigate, type]);
+		return `~${value.toLocaleString('en', {
+			style: 'currency',
+			currency: 'USD',
+		})} USD`;
+	}, [currentPrice, walletBalance]);
 
-    return (
-        <div
-            className={cl(
-                st.container,
-                st[mode],
-                mode === 'row-item' && st.coinBalanceBtn
-            )}
-            onClick={coinDetail}
-            role="button"
-        >
-            {mode === 'row-item' ? (
-                <CoinItem coinType={type} balance={balance} />
-            ) : null}
-            <div className={cl(st.valueContainer, st[mode])}>
-                <span className={cl(st.value, st[mode])}>{formatted}</span>
-                <span className={cl(st.symbol, st[mode])}>{symbol}</span>
-            </div>
-        </div>
-    );
+	if (!walletBalanceInUsd) {
+		return null;
+	}
+
+	return (
+		<Text variant="caption" weight="medium" color={isDefiWalletEnabled ? 'hero-darkest' : 'steel'}>
+			{walletBalanceInUsd}
+		</Text>
+	);
 }
 
-export default memo(CoinBalance);
+export function CoinBalance({ amount: walletBalance, type }: CoinProps) {
+	const { apiEnv } = useAppSelector((state) => state.app);
+	const [formatted, symbol] = useFormatCoin(walletBalance, type);
+
+	return (
+		<div className="flex flex-col gap-1 items-center justify-center">
+			<div className="flex items-center justify-center gap-2">
+				<Heading leading="none" variant="heading1" weight="bold" color="gray-90">
+					{formatted}
+				</Heading>
+
+				<Heading variant="heading6" weight="medium" color="steel">
+					{symbol}
+				</Heading>
+			</div>
+			<div>{apiEnv === API_ENV.mainnet ? <WalletBalanceUsd amount={walletBalance} /> : null}</div>
+		</div>
+	);
+}

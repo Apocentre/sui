@@ -4,7 +4,10 @@
 use std::{net::SocketAddr, num::NonZeroU32, time::Duration};
 
 use serde::{Deserialize, Serialize};
-use sui_types::multiaddr::Multiaddr;
+use sui_types::{
+    messages_checkpoint::{CheckpointDigest, CheckpointSequenceNumber},
+    multiaddr::Multiaddr,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -16,7 +19,7 @@ pub struct P2pConfig {
     /// This will be shared with other peers through the discovery service
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_address: Option<Multiaddr>,
-    /// SeedPeers configured with a PeerId are preferred and the node will always try to ensure a
+    /// SeedPeers are preferred and the node will always try to ensure a
     /// connection is established with these nodes.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub seed_peers: Vec<SeedPeer>,
@@ -59,6 +62,11 @@ impl P2pConfig {
         self.excessive_message_size
             .unwrap_or(EXCESSIVE_MESSAGE_SIZE)
     }
+
+    pub fn set_discovery_config(mut self, discovery_config: DiscoveryConfig) -> Self {
+        self.discovery = Some(discovery_config);
+        self
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -69,9 +77,28 @@ pub struct SeedPeer {
     pub address: Multiaddr,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct AllowlistedPeer {
+    pub peer_id: anemo::PeerId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<Multiaddr>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct StateSyncConfig {
+    /// List of "known-good" checkpoints that state sync will be forced to use. State sync will
+    /// skip verification of pinned checkpoints, and reject checkpoints with digests that don't
+    /// match pinned values for a given sequence number.
+    ///
+    /// This can be used:
+    /// - in case of a fork, to prevent the node from syncing to the wrong chain.
+    /// - in case of a network stall, to force the node to proceed with a manually-injected
+    ///   checkpoint.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pinned_checkpoints: Vec<(CheckpointSequenceNumber, CheckpointDigest)>,
+
     /// Query peers for their latest checkpoint every interval period.
     ///
     /// If unspecified, this will default to `5,000` milliseconds.
@@ -212,6 +239,20 @@ impl StateSyncConfig {
     }
 }
 
+/// Access Type of a node.
+/// AccessType info is shared in the discovery process.
+/// * If the node marks itself as Public, other nodes may try to connect to it.
+/// * If the node marks itself as Private, only nodes that have it in
+///     their `allowlisted_peers` or `seed_peers` will try to connect to it.
+/// * If not set, defaults to Public.
+/// AccessType is useful when a network of nodes want to stay private. To achieve this,
+/// mark every node in this network as `Private` and allowlist/seed them to each other.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AccessType {
+    Public,
+    Private,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct DiscoveryConfig {
@@ -241,6 +282,20 @@ pub struct DiscoveryConfig {
     /// If unspecified, this will default to no limit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub get_known_peers_rate_limit: Option<NonZeroU32>,
+
+    /// See docstring for `AccessType`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_type: Option<AccessType>,
+
+    /// Like `seed_peers` in `P2pConfig`, allowlisted peers will awlays be allowed to establish
+    /// connection with this node regardless of the concurrency limit.
+    /// Unlike `seed_peers`, a node does not reach out to `allowlisted_peers` preferentially.
+    /// It is also used to determine if a peer is accessible when its AccessType is Private.
+    /// For example, a node will ignore a peer with Private AccessType if the peer is not in
+    /// its `allowlisted_peers`. Namely, the node will not try to establish connections
+    /// to this peer, nor advertise this peer's info to other peers in the network.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub allowlisted_peers: Vec<AllowlistedPeer>,
 }
 
 impl DiscoveryConfig {
@@ -261,5 +316,10 @@ impl DiscoveryConfig {
         const PEERS_TO_QUERY: usize = 1;
 
         self.peers_to_query.unwrap_or(PEERS_TO_QUERY)
+    }
+
+    pub fn access_type(&self) -> AccessType {
+        // defaults None to Public
+        self.access_type.unwrap_or(AccessType::Public)
     }
 }

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use jsonrpsee::core::RpcResult;
-use jsonrpsee_proc_macros::rpc;
+use jsonrpsee::proc_macros::rpc;
 
 use sui_json_rpc_types::{
     Checkpoint, CheckpointId, CheckpointPage, SuiEvent, SuiGetPastObjectRequest,
@@ -132,7 +132,7 @@ pub trait ReadApi {
         transaction_digest: TransactionDigest,
     ) -> RpcResult<Vec<SuiEvent>>;
 
-    /// Return the total number of transactions known to the server.
+    /// Return the total number of transaction blocks known to the server.
     #[method(name = "getTotalTransactionBlocks")]
     async fn get_total_transaction_blocks(&self) -> RpcResult<BigInt<u64>>;
 
@@ -148,4 +148,8 @@ pub trait ReadApi {
         /// An optional protocol version specifier. If omitted, the latest protocol config table for the node will be returned.
         version: Option<BigInt<u64>>,
     ) -> RpcResult<ProtocolConfigResponse>;
+
+    /// Return the first four bytes of the chain's genesis checkpoint digest.
+    #[method(name = "getChainIdentifier")]
+    async fn get_chain_identifier(&self) -> RpcResult<String>;
 }

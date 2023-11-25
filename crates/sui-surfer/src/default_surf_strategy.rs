@@ -37,7 +37,10 @@ impl SurfStrategy for DefaultSurfStrategy {
         entry_functions.shuffle(&mut state.rng);
         for entry in entry_functions {
             let Some(args) = Self::choose_function_call_args(state, entry.parameters).await else {
-                debug!("Failed to choose arguments for Move function {:?}::{:?}", entry.module, entry.function);
+                debug!(
+                    "Failed to choose arguments for Move function {:?}::{:?}",
+                    entry.module, entry.function
+                );
                 continue;
             };
             state
@@ -67,7 +70,7 @@ impl DefaultSurfStrategy {
                 Type::U64 => CallArg::Pure(bcs::to_bytes(&state.rng.gen::<u64>()).unwrap()),
                 Type::U128 => CallArg::Pure(bcs::to_bytes(&state.rng.gen::<u128>()).unwrap()),
                 Type::Address => CallArg::Pure(
-                    bcs::to_bytes(&state.cluster.accounts.choose(&mut state.rng)).unwrap(),
+                    bcs::to_bytes(&state.cluster.get_addresses().choose(&mut state.rng)).unwrap(),
                 ),
                 ty @ Type::Struct { .. } => {
                     match Self::choose_object_call_arg(

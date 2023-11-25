@@ -1,30 +1,29 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useRpcClient } from '@mysten/core';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useSuiClient } from '@mysten/dapp-kit';
+import { type EpochPage } from '@mysten/sui.js/client';
+import { keepPreviousData, useInfiniteQuery } from '@tanstack/react-query';
 
 export const DEFAULT_EPOCHS_LIMIT = 20;
 
 // Fetch paginated epochs
 export function useGetEpochs(limit = DEFAULT_EPOCHS_LIMIT) {
-    const rpc = useRpcClient();
+	const client = useSuiClient();
 
-    return useInfiniteQuery(
-        ['get-epochs-blocks', limit],
-        ({ pageParam = null }) =>
-            rpc.getEpochs({
-                descendingOrder: true,
-                cursor: pageParam,
-                limit,
-            }),
-        {
-            getNextPageParam: ({ nextCursor, hasNextPage }) =>
-                hasNextPage ? nextCursor : null,
-            staleTime: 10 * 1000,
-            cacheTime: 24 * 60 * 60 * 1000,
-            retry: false,
-            keepPreviousData: true,
-        }
-    );
+	return useInfiniteQuery<EpochPage>({
+		queryKey: ['get-epochs-blocks', limit],
+		queryFn: ({ pageParam }) =>
+			client.getEpochs({
+				descendingOrder: true,
+				cursor: pageParam as string | null,
+				limit,
+			}),
+		initialPageParam: null,
+		getNextPageParam: ({ nextCursor, hasNextPage }) => (hasNextPage ? nextCursor : null),
+		staleTime: 10 * 1000,
+		gcTime: 24 * 60 * 60 * 1000,
+		retry: false,
+		placeholderData: keepPreviousData,
+	});
 }

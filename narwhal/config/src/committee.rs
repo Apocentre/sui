@@ -4,7 +4,8 @@
 
 use crate::{CommitteeUpdateError, ConfigError, Epoch, Stake};
 use crypto::{NetworkPublicKey, PublicKey, PublicKeyBytes};
-use fastcrypto::traits::EncodeDecodeBase64;
+use fastcrypto::serde_helpers::ToFromByteArray;
+use fastcrypto::traits::{EncodeDecodeBase64, ToFromBytes};
 use mysten_network::Multiaddr;
 use mysten_util_mem::MallocSizeOf;
 use rand::rngs::StdRng;
@@ -30,6 +31,8 @@ pub struct Authority {
     primary_address: Multiaddr,
     /// Network key of the primary.
     network_key: NetworkPublicKey,
+    /// The validator's hostname
+    hostname: String,
     /// There are secondary indexes that should be initialised before we are ready to use the
     /// authority - this bool protect us for premature use.
     #[serde(skip)]
@@ -46,6 +49,7 @@ impl Authority {
         stake: Stake,
         primary_address: Multiaddr,
         network_key: NetworkPublicKey,
+        hostname: String,
     ) -> Self {
         let protocol_key_bytes = PublicKeyBytes::from(&protocol_key);
 
@@ -56,6 +60,7 @@ impl Authority {
             stake,
             primary_address,
             network_key,
+            hostname,
             initialised: false,
         }
     }
@@ -93,6 +98,11 @@ impl Authority {
     pub fn network_key(&self) -> NetworkPublicKey {
         assert!(self.initialised);
         self.network_key.clone()
+    }
+
+    pub fn hostname(&self) -> &str {
+        assert!(self.initialised);
+        self.hostname.as_str()
     }
 }
 
@@ -231,6 +241,34 @@ impl Committee {
     /// Returns the keys in the committee
     pub fn keys(&self) -> Vec<PublicKey> {
         self.authorities.keys().cloned().collect::<Vec<PublicKey>>()
+    }
+
+    /// Returns info from the committee needed for randomness DKG.
+    pub fn randomness_dkg_info(
+        &self,
+    ) -> Vec<(
+        AuthorityIdentifier,
+        fastcrypto_tbls::ecies::PublicKey<fastcrypto::groups::bls12381::G2Element>,
+        Stake,
+    )> {
+        self.authorities_by_id
+            .iter()
+            .map(|(id, authority)| {
+                let pk = fastcrypto::groups::bls12381::G2Element::from_byte_array(
+                    authority
+                        .protocol_key()
+                        .as_bytes()
+                        .try_into()
+                        .expect("key length should match"),
+                )
+                .expect("should work to convert BLS key to G2Element");
+                (
+                    *id,
+                    fastcrypto_tbls::ecies::PublicKey::from(pk),
+                    authority.stake(),
+                )
+            })
+            .collect()
     }
 
     pub fn authorities(&self) -> impl Iterator<Item = &Authority> {
@@ -381,6 +419,7 @@ impl Committee {
     /// Update the networking information of some of the primaries. The arguments are a full vector of
     /// authorities which Public key and Stake must match the one stored in the current Committee. Any discrepancy
     /// will generate no update and return a vector of errors.
+    #[allow(clippy::manual_try_fold)]
     pub fn update_primary_network_info(
         &mut self,
         mut new_info: BTreeMap<PublicKey, (Stake, Multiaddr)>,
@@ -472,8 +511,15 @@ impl CommitteeBuilder {
         stake: Stake,
         primary_address: Multiaddr,
         network_key: NetworkPublicKey,
+        hostname: String,
     ) -> Self {
-        let authority = Authority::new(protocol_key.clone(), stake, primary_address, network_key);
+        let authority = Authority::new(
+            protocol_key.clone(),
+            stake,
+            primary_address,
+            network_key,
+            hostname,
+        );
         self.authorities.insert(protocol_key, authority);
         self
     }
@@ -499,7 +545,7 @@ mod tests {
         let num_of_authorities = 10;
 
         let authorities = (0..num_of_authorities)
-            .map(|_i| {
+            .map(|i| {
                 let keypair = KeyPair::generate(&mut rng);
                 let network_keypair = NetworkKeyPair::generate(&mut rng);
 
@@ -508,6 +554,7 @@ mod tests {
                     1,
                     Multiaddr::empty(),
                     network_keypair.public().clone(),
+                    i.to_string(),
                 );
 
                 (keypair.public().clone(), a)

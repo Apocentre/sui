@@ -550,7 +550,7 @@ pub fn derive_dbmap_utils_general(input: TokenStream) -> TokenStream {
                     #(
                         stringify!(#field_names) => {
                             typed_store::traits::Map::try_catch_up_with_primary(&self.#field_names)?;
-                            typed_store::traits::Map::iter(&self.#field_names)
+                            typed_store::traits::Map::unbounded_iter(&self.#field_names)
                                 .skip((page_number * (page_size) as usize))
                                 .take(page_size as usize)
                                 .map(|(k, v)| (format!("{:?}", k), format!("{:?}", v)))
@@ -587,7 +587,7 @@ pub fn derive_dbmap_utils_general(input: TokenStream) -> TokenStream {
                     #(
                         stringify!(#field_names) => {
                             typed_store::traits::Map::try_catch_up_with_primary(&self.#field_names)?;
-                            typed_store::traits::Map::iter(&self.#field_names).count()
+                            typed_store::traits::Map::unbounded_iter(&self.#field_names).count()
                         }
                     )*
 
@@ -599,6 +599,15 @@ pub fn derive_dbmap_utils_general(input: TokenStream) -> TokenStream {
                 vec![#(
                     (stringify!(#field_names).to_owned(), (stringify!(#key_names).to_owned(), stringify!(#value_names).to_owned())),
                 )*].into_iter().collect()
+            }
+
+            /// Try catch up with primary for all tables. This can be a slow operation
+            /// Tables must be opened in read only mode using `open_tables_read_only`
+            pub fn try_catch_up_with_primary_all(&self) -> eyre::Result<()> {
+                #(
+                    typed_store::traits::Map::try_catch_up_with_primary(&self.#field_names)?;
+                )*
+                Ok(())
             }
         }
 
@@ -908,7 +917,7 @@ pub fn derive_sallydb_general(input: TokenStream) -> TokenStream {
                             match &self.#field_names {
                                 SallyColumn::RocksDB((db_map, typed_store::sally::SallyConfig { mode: typed_store::sally::SallyRunMode::FallbackToDB })) => {
                                     typed_store::traits::Map::try_catch_up_with_primary(db_map)?;
-                                    typed_store::traits::Map::iter(db_map)
+                                    typed_store::traits::Map::unbounded_iter(db_map)
                                         .skip((page_number * (page_size) as usize))
                                         .take(page_size as usize)
                                         .map(|(k, v)| (format!("{:?}", k), format!("{:?}", v)))
@@ -952,7 +961,7 @@ pub fn derive_sallydb_general(input: TokenStream) -> TokenStream {
                             match &self.#field_names {
                                 SallyColumn::RocksDB((db_map, typed_store::sally::SallyConfig { mode: typed_store::sally::SallyRunMode::FallbackToDB })) => {
                                     typed_store::traits::Map::try_catch_up_with_primary(db_map)?;
-                                    typed_store::traits::Map::iter(db_map).count()
+                                    typed_store::traits::Map::unbounded_iter(db_map).count()
                                 }
                                 _ => unimplemented!(),
                             }

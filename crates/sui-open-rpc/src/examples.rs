@@ -7,38 +7,37 @@ use std::ops::Range;
 use std::str::FromStr;
 
 use fastcrypto::traits::EncodeDecodeBase64;
+use move_core_types::annotated_value::MoveStructLayout;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use move_core_types::language_storage::{StructTag, TypeTag};
 use move_core_types::resolver::ModuleResolver;
-use move_core_types::value::MoveStructLayout;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde_json::json;
 
 use sui_json::SuiJsonValue;
 use sui_json_rpc::error::Error;
-use sui_json_rpc_types::DevInspectResults;
-use sui_json_rpc_types::EventFilter;
-use sui_json_rpc_types::ProtocolConfigResponse;
-use sui_json_rpc_types::SuiTransactionBlockEvents;
-use sui_json_rpc_types::TransactionFilter;
 use sui_json_rpc_types::{
-    Balance, Checkpoint, CheckpointId, CheckpointPage, Coin, CoinPage, DynamicFieldPage, EventPage,
-    MoveCallParams, MoveFunctionArgType, ObjectChange, ObjectValueKind::ByImmutableReference,
+    Balance, Checkpoint, CheckpointId, CheckpointPage, Coin, CoinPage, DelegatedStake,
+    DevInspectResults, DynamicFieldPage, EventFilter, EventPage, MoveCallParams,
+    MoveFunctionArgType, ObjectChange, ObjectValueKind::ByImmutableReference,
     ObjectValueKind::ByMutableReference, ObjectValueKind::ByValue, ObjectsPage, OwnedObjectRef,
-    RPCTransactionRequestParams, SuiCommittee, SuiData, SuiEvent, SuiExecutionStatus,
+    Page, ProtocolConfigResponse, RPCTransactionRequestParams, Stake, StakeStatus, SuiCoinMetadata,
+    SuiCommittee, SuiData, SuiEvent, SuiExecutionStatus, SuiGetPastObjectRequest,
     SuiLoadedChildObject, SuiLoadedChildObjectsResponse, SuiMoveAbility, SuiMoveAbilitySet,
     SuiMoveNormalizedFunction, SuiMoveNormalizedModule, SuiMoveNormalizedStruct,
     SuiMoveNormalizedType, SuiMoveVisibility, SuiObjectData, SuiObjectDataFilter,
     SuiObjectDataOptions, SuiObjectRef, SuiObjectResponse, SuiObjectResponseQuery, SuiParsedData,
     SuiPastObjectResponse, SuiTransactionBlock, SuiTransactionBlockData,
-    SuiTransactionBlockEffects, SuiTransactionBlockEffectsV1, SuiTransactionBlockResponse,
-    SuiTransactionBlockResponseOptions, SuiTransactionBlockResponseQuery, TransactionBlockBytes,
-    TransactionBlocksPage, TransferObjectParams,
+    SuiTransactionBlockEffects, SuiTransactionBlockEffectsV1, SuiTransactionBlockEvents,
+    SuiTransactionBlockResponse, SuiTransactionBlockResponseOptions,
+    SuiTransactionBlockResponseQuery, TransactionBlockBytes, TransactionBlocksPage,
+    TransactionFilter, TransferObjectParams,
 };
 use sui_json_rpc_types::{SuiTypeTag, ValidatorApy, ValidatorApys};
 use sui_open_rpc::ExamplePairing;
+use sui_protocol_config::Chain;
 use sui_protocol_config::ProtocolConfig;
 use sui_types::balance::Supply;
 use sui_types::base_types::random_object_ref;
@@ -46,7 +45,6 @@ use sui_types::base_types::{
     MoveObjectType, ObjectDigest, ObjectID, ObjectType, SequenceNumber, SuiAddress,
     TransactionDigest,
 };
-use sui_types::coin::CoinMetadata;
 use sui_types::committee::Committee;
 use sui_types::crypto::{get_key_pair_from_rng, AccountKeyPair, AggregateAuthoritySignature};
 use sui_types::digests::TransactionEventsDigest;
@@ -54,7 +52,6 @@ use sui_types::dynamic_field::{DynamicFieldInfo, DynamicFieldName, DynamicFieldT
 use sui_types::event::EventID;
 use sui_types::gas::GasCostSummary;
 use sui_types::gas_coin::GasCoin;
-use sui_types::id::UID;
 use sui_types::messages_checkpoint::CheckpointDigest;
 use sui_types::object::MoveObject;
 use sui_types::object::Owner;
@@ -139,6 +136,12 @@ impl RpcExampleProvider {
             self.suix_query_events(),
             self.suix_get_latest_sui_system_state(),
             self.get_protocol_config(),
+            self.sui_get_chain_identifier(),
+            self.suix_get_stakes(),
+            self.suix_get_stakes_by_ids(),
+            self.suix_resolve_name_service_address(),
+            self.suix_resolve_name_service_names(),
+            self.sui_try_multi_get_past_objects(),
         ]
         .into_iter()
         .map(|example| (example.function_name, example.examples))
@@ -650,7 +653,7 @@ impl RpcExampleProvider {
         ProtocolConfigResponse::from(
             version
                 .map(|v| {
-                    ProtocolConfig::get_for_version_if_supported(v.into())
+                    ProtocolConfig::get_for_version_if_supported(v.into(), Chain::Unknown)
                         .unwrap_or(ProtocolConfig::get_for_min_version())
                 })
                 .unwrap_or(ProtocolConfig::get_for_min_version()),
@@ -692,11 +695,10 @@ impl RpcExampleProvider {
         let data2 = data.clone();
 
         let tx = to_sender_signed_transaction(data, &kp);
-        let tx1 = tx.clone();
-        let signatures = tx.into_inner().tx_signatures().to_vec();
-        let raw_transaction = bcs::to_bytes(tx1.data()).unwrap();
+        let signatures = tx.data().tx_signatures().to_vec();
+        let raw_transaction = bcs::to_bytes(tx.data()).unwrap();
 
-        let tx_digest = tx1.digest();
+        let tx_digest = tx.digest();
         let object_change = ObjectChange::Transferred {
             sender: signer,
             recipient: Owner::AddressOwner(recipient),
@@ -906,15 +908,13 @@ impl RpcExampleProvider {
     }
 
     fn suix_get_coin_metadata(&mut self) -> Examples {
-        let id = UID::new(ObjectID::new(self.rng.gen()));
-
-        let result = CoinMetadata {
+        let result = SuiCoinMetadata {
             decimals: 9,
             name: "Usdc".to_string(),
             symbol: "USDC".to_string(),
             description: "Stable coin.".to_string(),
             icon_url: None,
-            id,
+            id: Some(ObjectID::new(self.rng.gen())),
         };
 
         Examples::new(
@@ -1219,14 +1219,13 @@ impl RpcExampleProvider {
             value: serde_json::Value::String("some_value".to_string()),
         };
 
+        let struct_tag = parse_sui_struct_tag("0x9::test::TestField").unwrap();
         let resp = SuiObjectResponse::new_with_data(SuiObjectData {
             content: Some(
                 SuiParsedData::try_from_object(
                     unsafe {
                         MoveObject::new_from_execution_with_limit(
-                            MoveObjectType::from(
-                                parse_sui_struct_tag("0x9::test::TestField").unwrap(),
-                            ),
+                            MoveObjectType::from(struct_tag.clone()),
                             true,
                             SequenceNumber::from_u64(1),
                             Vec::new(),
@@ -1234,7 +1233,10 @@ impl RpcExampleProvider {
                         )
                         .unwrap()
                     },
-                    MoveStructLayout::WithFields(Vec::new()),
+                    MoveStructLayout {
+                        type_: struct_tag,
+                        fields: Vec::new(),
+                    },
                 )
                 .unwrap(),
             ),
@@ -1379,6 +1381,207 @@ impl RpcExampleProvider {
             vec![ExamplePairing::new(
                 "Gets objects owned by the address in the request.",
                 vec![],
+                json!(result),
+            )],
+        )
+    }
+
+    fn sui_get_chain_identifier(&mut self) -> Examples {
+        let result = "4c78adac".to_string();
+        Examples::new(
+            "sui_getChainIdentifier",
+            vec![ExamplePairing::new(
+                "Gets the identifier for the chain receiving the POST.",
+                vec![],
+                json!(result),
+            )],
+        )
+    }
+
+    fn suix_get_stakes(&mut self) -> Examples {
+        let principal = 200000000000;
+        let owner = SuiAddress::from(ObjectID::new(self.rng.gen()));
+        let result = vec![
+            DelegatedStake {
+                validator_address: SuiAddress::from(ObjectID::new(self.rng.gen())),
+                staking_pool: ObjectID::new(self.rng.gen()),
+                stakes: vec![
+                    Stake {
+                        staked_sui_id: ObjectID::new(self.rng.gen()),
+                        stake_request_epoch: 62,
+                        stake_active_epoch: 63,
+                        principal,
+                        status: StakeStatus::Active {
+                            estimated_reward: (principal as f64 * 0.0026) as u64,
+                        },
+                    },
+                    Stake {
+                        staked_sui_id: ObjectID::new(self.rng.gen()),
+                        stake_request_epoch: 142,
+                        stake_active_epoch: 143,
+                        principal,
+                        status: StakeStatus::Pending,
+                    },
+                ],
+            },
+            DelegatedStake {
+                validator_address: SuiAddress::from(ObjectID::new(self.rng.gen())),
+                staking_pool: ObjectID::new(self.rng.gen()),
+                stakes: vec![Stake {
+                    staked_sui_id: ObjectID::new(self.rng.gen()),
+                    stake_request_epoch: 244,
+                    stake_active_epoch: 245,
+                    principal,
+                    status: StakeStatus::Unstaked,
+                }],
+            },
+        ];
+
+        Examples::new(
+            "suix_getStakes",
+            vec![ExamplePairing::new(
+                "Returns the staking information for the address the request provides.",
+                vec![("owner", json!(owner))],
+                json!(result),
+            )],
+        )
+    }
+
+    fn suix_get_stakes_by_ids(&mut self) -> Examples {
+        let principal = 200000000000;
+        let stake1 = ObjectID::new(self.rng.gen());
+        let stake2 = ObjectID::new(self.rng.gen());
+        let result = DelegatedStake {
+            validator_address: SuiAddress::from(ObjectID::new(self.rng.gen())),
+            staking_pool: ObjectID::new(self.rng.gen()),
+            stakes: vec![
+                Stake {
+                    staked_sui_id: stake1,
+                    stake_request_epoch: 62,
+                    stake_active_epoch: 63,
+                    principal,
+                    status: StakeStatus::Active {
+                        estimated_reward: (principal as f64 * 0.0026) as u64,
+                    },
+                },
+                Stake {
+                    staked_sui_id: stake2,
+                    stake_request_epoch: 244,
+                    stake_active_epoch: 245,
+                    principal,
+                    status: StakeStatus::Unstaked,
+                },
+            ],
+        };
+        Examples::new(
+            "suix_getStakesByIds",
+            vec![ExamplePairing::new(
+                "Returns the staking information for the address the request provides.",
+                vec![("staked_sui_ids", json!(vec![stake1, stake2]))],
+                json!(result),
+            )],
+        )
+    }
+
+    fn suix_resolve_name_service_address(&mut self) -> Examples {
+        let result = ObjectID::new(self.rng.gen());
+        Examples::new(
+            "suix_resolveNameServiceAddress",
+            vec![ExamplePairing::new(
+                "Returns the resolved address for the name the request provides.",
+                vec![("name", json!("example.sui".to_string()))],
+                json!(result),
+            )],
+        )
+    }
+
+    fn suix_resolve_name_service_names(&mut self) -> Examples {
+        let next_cursor = Some(ObjectID::new(self.rng.gen()));
+        let object_id = ObjectID::new(self.rng.gen());
+        let result = Page {
+            data: vec!["example.sui".to_string()],
+            next_cursor,
+            has_next_page: false,
+        };
+        Examples::new(
+            "suix_resolveNameServiceNames",
+            vec![ExamplePairing::new(
+                "Returns the SuiNS name for the address the request provides. Currently, the API returns only the first name in cases where there are multiple. Future support will use the cursor ID and limit values in the request to control pagination of the response for addresses with multiple names.",
+                vec![
+                    ("address", json!(object_id)),
+                    ("cursor", json!(next_cursor)),
+                    ("limit", json!(3)),
+                ],
+                json!(result),
+            )],
+        )
+    }
+
+    fn sui_try_multi_get_past_objects(&mut self) -> Examples {
+        let object_id = ObjectID::new(self.rng.gen());
+        let object_id2 = ObjectID::new(self.rng.gen());
+        let version = SequenceNumber::from_u64(4);
+        let version2 = SequenceNumber::from_u64(12);
+        let objects = vec![
+            SuiGetPastObjectRequest { object_id, version },
+            SuiGetPastObjectRequest {
+                object_id: object_id2,
+                version: version2,
+            },
+        ];
+        let coin = GasCoin::new(object_id, 10000);
+        let coin2 = GasCoin::new(object_id, 20000);
+        let result = vec![
+            SuiPastObjectResponse::VersionFound(SuiObjectData {
+                content: Some(
+                    SuiParsedData::try_from_object(
+                        coin.to_object(SequenceNumber::from_u64(1)),
+                        GasCoin::layout(),
+                    )
+                    .unwrap(),
+                ),
+                owner: Some(Owner::AddressOwner(SuiAddress::from(ObjectID::new(
+                    self.rng.gen(),
+                )))),
+                previous_transaction: Some(TransactionDigest::new(self.rng.gen())),
+                storage_rebate: Some(100),
+                object_id,
+                version: SequenceNumber::from_u64(4),
+                digest: ObjectDigest::new(self.rng.gen()),
+                type_: Some(ObjectType::Struct(MoveObjectType::gas_coin())),
+                bcs: None,
+                display: None,
+            }),
+            SuiPastObjectResponse::VersionFound(SuiObjectData {
+                content: Some(
+                    SuiParsedData::try_from_object(
+                        coin2.to_object(SequenceNumber::from_u64(4)),
+                        GasCoin::layout(),
+                    )
+                    .unwrap(),
+                ),
+                owner: Some(Owner::AddressOwner(SuiAddress::from(ObjectID::new(
+                    self.rng.gen(),
+                )))),
+                previous_transaction: Some(TransactionDigest::new(self.rng.gen())),
+                storage_rebate: Some(100),
+                object_id: object_id2,
+                version: version2,
+                digest: ObjectDigest::new(self.rng.gen()),
+                type_: Some(ObjectType::Struct(MoveObjectType::gas_coin())),
+                bcs: None,
+                display: None,
+            }),
+        ];
+
+        Examples::new(
+            "sui_tryMultiGetPastObjects",
+            vec![ExamplePairing::new(
+                "Gets Past Object data for a vector of objects.",
+                vec![
+                    ("past_objects", json!(objects)),
+                    ("options", json!(SuiObjectDataOptions::full_content())),
+                ],
                 json!(result),
             )],
         )

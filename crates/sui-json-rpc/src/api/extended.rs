@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use jsonrpsee::core::RpcResult;
-use jsonrpsee_proc_macros::rpc;
+use jsonrpsee::proc_macros::rpc;
 
 use sui_json_rpc_types::{
-    AddressMetrics, CheckpointedObjectID, EpochInfo, EpochPage, MoveCallMetrics, NetworkMetrics,
-    QueryObjectsPage, SuiObjectResponseQuery,
+    AddressMetrics, CheckpointedObjectID, EpochInfo, EpochMetricsPage, EpochPage, MoveCallMetrics,
+    NetworkMetrics, QueryObjectsPage, SuiObjectResponseQuery,
 };
 use sui_open_rpc_macros::open_rpc;
 use sui_types::sui_serde::BigInt;
@@ -25,6 +25,18 @@ pub trait ExtendedApi {
         /// flag to return results in descending order
         descending_order: Option<bool>,
     ) -> RpcResult<EpochPage>;
+
+    /// Return a list of epoch metrics, which is a subset of epoch info
+    #[method(name = "getEpochMetrics")]
+    async fn get_epoch_metrics(
+        &self,
+        /// optional paging cursor
+        cursor: Option<BigInt<u64>>,
+        /// maximum number of items per page
+        limit: Option<usize>,
+        /// flag to return results in descending order
+        descending_order: Option<bool>,
+    ) -> RpcResult<EpochMetricsPage>;
 
     /// Return current epoch info
     #[method(name = "getCurrentEpoch")]
@@ -55,4 +67,12 @@ pub trait ExtendedApi {
     async fn get_latest_address_metrics(&self) -> RpcResult<AddressMetrics>;
     #[method(name = "getCheckpointAddressMetrics")]
     async fn get_checkpoint_address_metrics(&self, checkpoint: u64) -> RpcResult<AddressMetrics>;
+    #[method(name = "getAllEpochAddressMetrics")]
+    async fn get_all_epoch_address_metrics(
+        &self,
+        descending_order: Option<bool>,
+    ) -> RpcResult<Vec<AddressMetrics>>;
+
+    #[method(name = "getTotalTransactions")]
+    async fn get_total_transactions(&self) -> RpcResult<BigInt<u64>>;
 }

@@ -1,12 +1,31 @@
 CREATE MATERIALIZED VIEW epoch_network_metrics as
-SELECT MAX(tps_30_days) as tps_30_days
-FROM (SELECT (((SUM(total_successful_transactions + total_transaction_blocks - total_successful_transaction_blocks) OVER w) - 
-               (FIRST_VALUE(total_successful_transactions + total_transaction_blocks - total_successful_transaction_blocks) OVER w))::float8 /
-              ((MAX(timestamp_ms) OVER w - MIN(timestamp_ms) OVER w)) *
-              1000) AS tps_30_days
-      FROM checkpoints
-      WHERE timestamp_ms / 1000 > (EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - '30 days'::INTERVAL)))::BIGINT
-      WINDOW w AS (ORDER BY timestamp_ms ROWS BETWEEN 14 PRECEDING AND 15 FOLLOWING)) t1;
+WITH checkpoints_30d AS (
+  SELECT
+    MAX(sequence_number) AS sequence_number,
+    SUM(total_successful_transactions) AS total_successful_transactions,
+    timestamp_ms
+  FROM
+    checkpoints
+  WHERE
+    timestamp_ms > EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - INTERVAL '30 days')) * 1000
+  GROUP BY
+    timestamp_ms
+),
+tps_data AS (
+  SELECT
+    sequence_number,
+    total_successful_transactions,
+    LAG(timestamp_ms) OVER (ORDER BY timestamp_ms DESC) - timestamp_ms AS time_diff
+  FROM 
+    checkpoints_30d
+)
+SELECT 
+  MAX(total_successful_transactions * 1000.0 / time_diff)::float8 as tps_30_days
+FROM 
+  tps_data
+WHERE 
+  time_diff IS NOT NULL;
+CREATE UNIQUE INDEX epoch_network_metrics_tps ON epoch_network_metrics(tps_30_days);
 
 CREATE TABLE epochs
 (
@@ -48,8 +67,37 @@ BEGIN
         LOOP
             BEGIN
                 attempts := attempts + 1;
-                REFRESH MATERIALIZED VIEW epoch_network_metrics;
-                REFRESH MATERIALIZED VIEW epoch_move_call_metrics;
+                REFRESH MATERIALIZED VIEW CONCURRENTLY epoch_network_metrics;
+                INSERT INTO epoch_move_call_metrics
+                  SELECT (SELECT MAX(epoch) FROM epochs) AS epoch, 3::BIGINT AS day, move_package, move_module, move_function, COUNT(*) AS count
+                   FROM move_calls
+                   WHERE epoch >=
+                         (SELECT MIN(epoch)
+                          FROM epochs
+                          WHERE epoch_start_timestamp > ((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - '3 days'::INTERVAL)) * 1000)::BIGINT)
+                   GROUP BY move_package, move_module, move_function
+                   ORDER BY count DESC
+                   LIMIT 10;
+                INSERT INTO epoch_move_call_metrics
+                  SELECT (SELECT MAX(epoch) FROM epochs) AS epoch, 7::BIGINT AS day, move_package, move_module, move_function, COUNT(*) AS count
+                   FROM move_calls
+                   WHERE epoch >=
+                         (SELECT MIN(epoch)
+                          FROM epochs
+                          WHERE epoch_start_timestamp > ((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - '7 days'::INTERVAL)) * 1000)::BIGINT)
+                   GROUP BY move_package, move_module, move_function
+                   ORDER BY count DESC
+                   LIMIT 10;
+                INSERT INTO epoch_move_call_metrics
+                  SELECT (SELECT MAX(epoch) FROM epochs) AS epoch, 30::BIGINT AS day, move_package, move_module, move_function, COUNT(*) AS count
+                   FROM move_calls
+                   WHERE epoch >=
+                         (SELECT MIN(epoch)
+                          FROM epochs
+                          WHERE epoch_start_timestamp > ((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - '30 days'::INTERVAL)) * 1000)::BIGINT)
+                   GROUP BY move_package, move_module, move_function
+                   ORDER BY count DESC
+                   LIMIT 10;
                 EXIT;
             EXCEPTION
                 WHEN OTHERS THEN
@@ -90,33 +138,12 @@ CREATE TRIGGER refresh_view
     FOR EACH ROW
 EXECUTE PROCEDURE refresh_view_func();
 
-CREATE MATERIALIZED VIEW epoch_move_call_metrics AS
-(SELECT 3::BIGINT AS day, move_package, move_module, move_function, COUNT(*) AS count
- FROM move_calls
- WHERE epoch >
-       (SELECT MIN(epoch)
-        FROM epochs
-        WHERE epoch_start_timestamp > ((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - '3 days'::INTERVAL)) * 1000)::BIGINT)
- GROUP BY move_package, move_module, move_function
- ORDER BY count DESC
- LIMIT 10)
-UNION ALL
-(SELECT 7::BIGINT AS day, move_package, move_module, move_function, COUNT(*) AS count
- FROM move_calls
- WHERE epoch >
-       (SELECT MIN(epoch)
-        FROM epochs
-        WHERE epoch_start_timestamp > ((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - '7 days'::INTERVAL)) * 1000)::BIGINT)
- GROUP BY move_package, move_module, move_function
- ORDER BY count DESC
- LIMIT 10)
-UNION ALL
-(SELECT 30::BIGINT AS day, move_package, move_module, move_function, COUNT(*) AS count
- FROM move_calls
- WHERE epoch >
-       (SELECT MIN(epoch)
-        FROM epochs
-        WHERE epoch_start_timestamp > ((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - '30 days'::INTERVAL)) * 1000)::BIGINT)
- GROUP BY move_package, move_module, move_function
- ORDER BY count DESC
- LIMIT 10);
+CREATE TABLE epoch_move_call_metrics (
+    epoch         bigint NOT NULL,
+    day           bigint NOT NULL,
+    move_package  text NOT NULL,
+    move_module   text NOT NULL,
+    move_function text NOT NULL,
+    count         bigint NOT NULL
+);
+CREATE INDEX move_calls_metics_epoch ON epoch_move_call_metrics (epoch);

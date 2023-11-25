@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::examples::RpcExampleProvider;
-use clap::ArgEnum;
 use clap::Parser;
+use clap::ValueEnum;
 use pretty_assertions::assert_str_eq;
 use std::fs::File;
 use std::io::Write;
-use sui_core::SUI_CORE_VERSION;
 //temporarily remove api ref content for indexer methods
 //use sui_json_rpc::api::ExtendedApiOpenRpc;
 use sui_json_rpc::api::IndexerApiOpenRpc;
@@ -22,7 +21,7 @@ use sui_json_rpc::SuiRpcModule;
 
 mod examples;
 
-#[derive(Debug, Parser, Clone, Copy, ArgEnum)]
+#[derive(Debug, Parser, Clone, Copy, ValueEnum)]
 enum Action {
     Print,
     Test,
@@ -35,17 +34,20 @@ enum Action {
     about = "Trace serde (de)serialization to generate format descriptions for Sui types"
 )]
 struct Options {
-    #[clap(arg_enum, default_value = "Record", ignore_case = true)]
+    #[clap(value_enum, default_value = "Record", ignore_case = true)]
     action: Action,
 }
 
 const FILE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/spec/openrpc.json",);
 
+// TODO: This currently always use workspace version, which is not ideal.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[tokio::main]
 async fn main() {
     let options = Options::parse();
 
-    let mut open_rpc = sui_rpc_doc(SUI_CORE_VERSION);
+    let mut open_rpc = sui_rpc_doc(VERSION);
     open_rpc.add_module(ReadApi::rpc_doc_module());
     open_rpc.add_module(CoinReadApi::rpc_doc_module());
     open_rpc.add_module(IndexerApiOpenRpc::module_doc());

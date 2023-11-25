@@ -29,7 +29,7 @@ use sui_types::digests::TransactionDigest;
 use sui_types::object::Object;
 use sui_types::transaction::SenderSignedData;
 use sui_types::transaction::TransactionDataAPI;
-use sui_types::transaction::TransactionKind;
+use sui_types::transaction::{EndOfEpochTransactionKind, TransactionKind};
 use tracing::error;
 
 /// This trait defines the interfaces for fetching data from some local or remote store
@@ -83,6 +83,8 @@ pub(crate) trait DataFetcher {
         &self,
         reverse: bool,
     ) -> Result<Vec<SuiEvent>, ReplayEngineError>;
+
+    async fn get_chain_id(&self) -> Result<String, ReplayEngineError>;
 }
 
 #[derive(Clone)]
@@ -208,6 +210,12 @@ impl DataFetcher for Fetchers {
         match self {
             Fetchers::Remote(q) => q.get_epoch_change_events(reverse).await,
             Fetchers::NodeStateDump(q) => q.get_epoch_change_events(reverse).await,
+        }
+    }
+    async fn get_chain_id(&self) -> Result<String, ReplayEngineError> {
+        match self {
+            Fetchers::Remote(q) => q.get_chain_id().await,
+            Fetchers::NodeStateDump(q) => q.get_chain_id().await,
         }
     }
 }
@@ -507,14 +515,30 @@ impl DataFetcher for RemoteFetcher {
         let orig_tx: SenderSignedData = bcs::from_bytes(&tx_info.raw_transaction).unwrap();
         let tx_kind_orig = orig_tx.transaction_data().kind();
 
-        if let TransactionKind::ChangeEpoch(change) = tx_kind_orig {
-            // Backfill cache
-            self.epoch_info_cache.write().put(
-                epoch_id,
-                (change.epoch_start_timestamp_ms, reference_gas_price),
-            );
+        match tx_kind_orig {
+            TransactionKind::ChangeEpoch(change) => {
+                // Backfill cache
+                self.epoch_info_cache.write().put(
+                    epoch_id,
+                    (change.epoch_start_timestamp_ms, reference_gas_price),
+                );
 
-            return Ok((change.epoch_start_timestamp_ms, reference_gas_price));
+                return Ok((change.epoch_start_timestamp_ms, reference_gas_price));
+            }
+            TransactionKind::EndOfEpochTransaction(kinds) => {
+                for kind in kinds {
+                    if let EndOfEpochTransactionKind::ChangeEpoch(change) = kind {
+                        // Backfill cache
+                        self.epoch_info_cache.write().put(
+                            epoch_id,
+                            (change.epoch_start_timestamp_ms, reference_gas_price),
+                        );
+
+                        return Ok((change.epoch_start_timestamp_ms, reference_gas_price));
+                    }
+                }
+            }
+            _ => {}
         }
         Err(ReplayEngineError::InvalidEpochChangeTx { epoch: epoch_id })
     }
@@ -526,18 +550,40 @@ impl DataFetcher for RemoteFetcher {
         let struct_tag_str = EPOCH_CHANGE_STRUCT_TAG.to_string();
         let struct_tag = parse_struct_tag(&struct_tag_str)?;
 
-        // TODO: Should probably limit/page this but okay for now?
-        Ok(self
+        let mut epoch_change_events: Vec<SuiEvent> = vec![];
+        let mut has_next_page = true;
+        let mut cursor = None;
+
+        while has_next_page {
+            let page_data = self
+                .rpc_client
+                .event_api()
+                .query_events(
+                    EventFilter::MoveEventType(struct_tag.clone()),
+                    cursor,
+                    None,
+                    reverse,
+                )
+                .await
+                .map_err(|e| ReplayEngineError::UnableToQuerySystemEvents {
+                    rpc_err: e.to_string(),
+                })?;
+            epoch_change_events.extend(page_data.data);
+            has_next_page = page_data.has_next_page;
+            cursor = page_data.next_cursor;
+        }
+
+        Ok(epoch_change_events)
+    }
+
+    async fn get_chain_id(&self) -> Result<String, ReplayEngineError> {
+        let chain_id = self
             .rpc_client
-            .event_api()
-            .query_events(EventFilter::MoveEventType(struct_tag), None, None, reverse)
+            .read_api()
+            .get_chain_identifier()
             .await
-            .map_err(|e| ReplayEngineError::UnableToQuerySystemEvents {
-                rpc_err: e.to_string(),
-            })?
-            .data
-            .into_iter()
-            .collect())
+            .map_err(|e| ReplayEngineError::UnableToGetChainId { err: e.to_string() })?;
+        Ok(chain_id)
     }
 }
 
@@ -587,11 +633,14 @@ pub fn extract_epoch_and_version(ev: SuiEvent) -> Result<(u64, u64), ReplayEngin
     Err(ReplayEngineError::UnexpectedEventFormat { event: ev })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NodeStateDumpFetcher {
     pub node_state_dump: NodeStateDump,
     pub object_ref_pool: BTreeMap<(ObjectID, SequenceNumber), Object>,
     pub latest_object_version_pool: BTreeMap<ObjectID, Object>,
+
+    // Used when we need to fetch data from remote such as
+    pub backup_remote_fetcher: Option<RemoteFetcher>,
 }
 
 impl From<NodeStateDump> for NodeStateDumpFetcher {
@@ -621,7 +670,19 @@ impl From<NodeStateDump> for NodeStateDumpFetcher {
             node_state_dump,
             object_ref_pool,
             latest_object_version_pool,
+            backup_remote_fetcher: None,
         }
+    }
+}
+
+impl NodeStateDumpFetcher {
+    pub fn new(
+        node_state_dump: NodeStateDump,
+        backup_remote_fetcher: Option<RemoteFetcher>,
+    ) -> Self {
+        let mut s = Self::from(node_state_dump);
+        s.backup_remote_fetcher = backup_remote_fetcher;
+        s
     }
 }
 
@@ -632,7 +693,7 @@ impl DataFetcher for NodeStateDumpFetcher {
         objects: &[(ObjectID, SequenceNumber)],
     ) -> Result<Vec<Object>, ReplayEngineError> {
         let mut resp = vec![];
-        objects.iter().try_for_each(|(id, version)| {
+        match objects.iter().try_for_each(|(id, version)| {
             if let Some(obj) = self.object_ref_pool.get(&(*id, *version)) {
                 resp.push(obj.clone());
                 return Ok(());
@@ -641,8 +702,15 @@ impl DataFetcher for NodeStateDumpFetcher {
                 id: *id,
                 version: *version,
             })
-        })?;
-        Ok(resp)
+        }) {
+            Ok(_) => return Ok(resp),
+            Err(e) => {
+                if let Some(backup_remote_fetcher) = &self.backup_remote_fetcher {
+                    return backup_remote_fetcher.multi_get_versioned(objects).await;
+                }
+                return Err(e);
+            }
+        };
     }
 
     async fn multi_get_latest(
@@ -650,14 +718,21 @@ impl DataFetcher for NodeStateDumpFetcher {
         objects: &[ObjectID],
     ) -> Result<Vec<Object>, ReplayEngineError> {
         let mut resp = vec![];
-        objects.iter().try_for_each(|id| {
+        match objects.iter().try_for_each(|id| {
             if let Some(obj) = self.latest_object_version_pool.get(id) {
                 resp.push(obj.clone());
                 return Ok(());
             }
             Err(ReplayEngineError::ObjectNotExist { id: *id })
-        })?;
-        Ok(resp)
+        }) {
+            Ok(_) => return Ok(resp),
+            Err(e) => {
+                if let Some(backup_remote_fetcher) = &self.backup_remote_fetcher {
+                    return backup_remote_fetcher.multi_get_latest(objects).await;
+                }
+                return Err(e);
+            }
+        };
     }
 
     async fn get_checkpoint_txs(
@@ -715,5 +790,9 @@ impl DataFetcher for NodeStateDumpFetcher {
         _reverse: bool,
     ) -> Result<Vec<SuiEvent>, ReplayEngineError> {
         unimplemented!("get_epoch_change_events for state dump is not implemented")
+    }
+
+    async fn get_chain_id(&self) -> Result<String, ReplayEngineError> {
+        unimplemented!("get_chain_id for state dump is not implemented")
     }
 }

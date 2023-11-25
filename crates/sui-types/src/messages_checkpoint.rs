@@ -2,21 +2,27 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::accumulator::Accumulator;
-use crate::base_types::{ExecutionData, ExecutionDigests, VerifiedExecutionData};
+use crate::base_types::{
+    random_object_ref, ExecutionData, ExecutionDigests, VerifiedExecutionData,
+};
 use crate::committee::{EpochId, ProtocolVersion, StakeUnit};
 use crate::crypto::{
-    default_hash, AggregateAuthoritySignature, AuthoritySignInfo, AuthorityStrongQuorumSignInfo,
+    default_hash, get_key_pair, AccountKeyPair, AggregateAuthoritySignature, AuthoritySignInfo,
+    AuthorityStrongQuorumSignInfo,
 };
 use crate::digests::Digest;
-use crate::effects::TransactionEffectsAPI;
+use crate::effects::{TransactionEffects, TransactionEffectsAPI};
 use crate::error::SuiResult;
 use crate::gas::GasCostSummary;
-use crate::message_envelope::{Envelope, Message, TrustedEnvelope, VerifiedEnvelope};
+use crate::message_envelope::{
+    Envelope, Message, TrustedEnvelope, UnauthenticatedMessage, VerifiedEnvelope,
+};
 use crate::signature::GenericSignature;
 use crate::storage::ReadStore;
 use crate::sui_serde::AsProtocolVersion;
 use crate::sui_serde::BigInt;
 use crate::sui_serde::Readable;
+use crate::transaction::{Transaction, TransactionData};
 use crate::{base_types::AuthorityName, committee::Committee, error::SuiError};
 use anyhow::Result;
 use fastcrypto::hash::MultisetHash;
@@ -24,7 +30,7 @@ use once_cell::sync::OnceCell;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use shared_crypto::intent::IntentScope;
+use shared_crypto::intent::{Intent, IntentScope};
 use std::fmt::{Debug, Display, Formatter};
 use std::slice::Iter;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -156,17 +162,23 @@ impl Message for CheckpointSummary {
         CheckpointDigest::new(default_hash(self))
     }
 
-    fn verify(&self, sig_epoch: Option<EpochId>) -> SuiResult {
-        // Signatures over CheckpointSummaries from other epochs are not valid.
-        if let Some(sig_epoch) = sig_epoch {
-            fp_ensure!(
-                self.epoch == sig_epoch,
-                SuiError::from("Epoch in the summary doesn't match with the signature")
-            );
-        }
+    fn verify_user_input(&self) -> SuiResult {
+        Ok(())
+    }
+
+    fn verify_epoch(&self, epoch: EpochId) -> SuiResult {
+        fp_ensure!(
+            self.epoch == epoch,
+            SuiError::WrongEpoch {
+                expected_epoch: epoch,
+                actual_epoch: self.epoch,
+            }
+        );
         Ok(())
     }
 }
+
+impl UnauthenticatedMessage for CheckpointSummary {}
 
 impl CheckpointSummary {
     pub fn new(
@@ -258,7 +270,7 @@ impl CertifiedCheckpointSummary {
         committee: &Committee,
         contents: Option<&CheckpointContents>,
     ) -> SuiResult {
-        self.verify_signature(committee)?;
+        self.verify_authority_signatures(committee)?;
 
         if let Some(contents) = contents {
             let content_digest = *contents.digest();
@@ -270,16 +282,20 @@ impl CertifiedCheckpointSummary {
 
         Ok(())
     }
-}
 
-impl VerifiedCheckpoint {
     pub fn into_summary_and_sequence(self) -> (CheckpointSequenceNumber, CheckpointSummary) {
-        let summary = self.into_inner().into_data();
+        let summary = self.into_data();
         (summary.sequence_number, summary)
     }
 
     pub fn get_validator_signature(self) -> AggregateAuthoritySignature {
         self.auth_sig().signature.clone()
+    }
+}
+
+impl VerifiedCheckpoint {
+    pub fn into_summary_and_sequence(self) -> (CheckpointSequenceNumber, CheckpointSummary) {
+        self.into_inner().into_summary_and_sequence()
     }
 }
 
@@ -291,7 +307,7 @@ pub struct CheckpointSignatureMessage {
 
 impl CheckpointSignatureMessage {
     pub fn verify(&self, committee: &Committee) -> SuiResult {
-        self.summary.verify_signature(committee)
+        self.summary.verify_authority_signatures(committee)
     }
 }
 
@@ -317,20 +333,7 @@ pub struct CheckpointContentsV1 {
 }
 
 impl CheckpointContents {
-    pub fn new_with_causally_ordered_transactions<T>(contents: T) -> Self
-    where
-        T: IntoIterator<Item = ExecutionDigests>,
-    {
-        let transactions: Vec<_> = contents.into_iter().collect();
-        let user_signatures = transactions.iter().map(|_| vec![]).collect();
-        Self::V1(CheckpointContentsV1 {
-            digest: Default::default(),
-            transactions,
-            user_signatures,
-        })
-    }
-
-    pub fn new_with_causally_ordered_transactions_and_signatures<T>(
+    pub fn new_with_digests_and_signatures<T>(
         contents: T,
         user_signatures: Vec<Vec<GenericSignature>>,
     ) -> Self
@@ -339,6 +342,41 @@ impl CheckpointContents {
     {
         let transactions: Vec<_> = contents.into_iter().collect();
         assert_eq!(transactions.len(), user_signatures.len());
+        Self::V1(CheckpointContentsV1 {
+            digest: Default::default(),
+            transactions,
+            user_signatures,
+        })
+    }
+
+    pub fn new_with_causally_ordered_execution_data<'a, T>(contents: T) -> Self
+    where
+        T: IntoIterator<Item = &'a VerifiedExecutionData>,
+    {
+        let (transactions, user_signatures): (Vec<_>, Vec<_>) = contents
+            .into_iter()
+            .map(|data| {
+                (
+                    data.digests(),
+                    data.transaction.inner().data().tx_signatures().to_owned(),
+                )
+            })
+            .unzip();
+        assert_eq!(transactions.len(), user_signatures.len());
+        Self::V1(CheckpointContentsV1 {
+            digest: Default::default(),
+            transactions,
+            user_signatures,
+        })
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_with_digests_only_for_tests<T>(contents: T) -> Self
+    where
+        T: IntoIterator<Item = ExecutionDigests>,
+    {
+        let transactions: Vec<_> = contents.into_iter().collect();
+        let user_signatures = transactions.iter().map(|_| vec![]).collect();
         Self::V1(CheckpointContentsV1 {
             digest: Default::default(),
             transactions,
@@ -371,7 +409,7 @@ impl CheckpointContents {
             ..
         } = self.into_v1();
 
-        transactions.into_iter().zip(user_signatures.into_iter())
+        transactions.into_iter().zip(user_signatures)
     }
 
     /// Return an iterator that enumerates the transactions in the contents.
@@ -424,14 +462,29 @@ impl FullCheckpointContents {
     where
         T: IntoIterator<Item = ExecutionData>,
     {
-        let transactions: Vec<_> = contents.into_iter().collect();
-        let user_signatures = transactions.iter().map(|_| vec![]).collect();
+        let (transactions, user_signatures): (Vec<_>, Vec<_>) = contents
+            .into_iter()
+            .map(|data| {
+                let sig = data.transaction.data().tx_signatures().to_owned();
+                (data, sig)
+            })
+            .unzip();
+        assert_eq!(transactions.len(), user_signatures.len());
         Self {
             transactions,
             user_signatures,
         }
     }
-
+    pub fn from_contents_and_execution_data(
+        contents: CheckpointContents,
+        execution_data: impl Iterator<Item = ExecutionData>,
+    ) -> Self {
+        let transactions: Vec<_> = execution_data.collect();
+        Self {
+            transactions,
+            user_signatures: contents.into_v1().user_signatures,
+        }
+    }
     pub fn from_checkpoint_contents<S>(
         store: S,
         contents: CheckpointContents,
@@ -506,6 +559,28 @@ impl FullCheckpointContents {
     pub fn size(&self) -> usize {
         self.transactions.len()
     }
+
+    pub fn random_for_testing() -> Self {
+        let (a, key): (_, AccountKeyPair) = get_key_pair();
+        let transaction = Transaction::from_data_and_signer(
+            TransactionData::new_transfer(
+                a,
+                random_object_ref(),
+                a,
+                random_object_ref(),
+                100000000000,
+                100,
+            ),
+            Intent::sui_transaction(),
+            vec![&key],
+        );
+        let effects = TransactionEffects::new_with_tx(&transaction);
+        let exe_data = ExecutionData {
+            transaction,
+            effects,
+        };
+        FullCheckpointContents::new_with_causally_ordered_transactions(vec![exe_data])
+    }
 }
 
 impl IntoIterator for FullCheckpointContents {
@@ -552,9 +627,22 @@ impl VerifiedCheckpointContents {
             user_signatures: self.user_signatures,
         }
     }
+
+    pub fn into_checkpoint_contents(self) -> CheckpointContents {
+        self.into_inner().into_checkpoint_contents()
+    }
+
+    pub fn into_checkpoint_contents_digest(self) -> CheckpointContentsDigest {
+        *self.into_inner().into_checkpoint_contents().digest()
+    }
+
+    pub fn num_of_transactions(&self) -> usize {
+        self.transactions.len()
+    }
 }
 
 #[cfg(test)]
+#[cfg(feature = "test-utils")]
 mod tests {
     use fastcrypto::traits::KeyPair;
     use rand::prelude::StdRng;
@@ -575,9 +663,7 @@ mod tests {
         let (keys, committee) = make_committee_key(&mut rng);
         let (_, committee2) = make_committee_key(&mut rng);
 
-        let set = CheckpointContents::new_with_causally_ordered_transactions(
-            [ExecutionDigests::random()].into_iter(),
-        );
+        let set = CheckpointContents::new_with_digests_only_for_tests([ExecutionDigests::random()]);
 
         // TODO: duplicated in a test below.
 
@@ -604,14 +690,15 @@ mod tests {
             })
             .collect();
 
-        signed_checkpoints
-            .iter()
-            .for_each(|c| c.verify_signature(&committee).expect("signature ok"));
+        signed_checkpoints.iter().for_each(|c| {
+            c.verify_authority_signatures(&committee)
+                .expect("signature ok")
+        });
 
         // fails when not signed by member of committee
         signed_checkpoints
             .iter()
-            .for_each(|c| assert!(c.verify_signature(&committee2).is_err()));
+            .for_each(|c| assert!(c.verify_authority_signatures(&committee2).is_err()));
     }
 
     #[test]
@@ -619,9 +706,7 @@ mod tests {
         let mut rng = StdRng::from_seed(RNG_SEED);
         let (keys, committee) = make_committee_key(&mut rng);
 
-        let set = CheckpointContents::new_with_causally_ordered_transactions(
-            [ExecutionDigests::random()].into_iter(),
-        );
+        let set = CheckpointContents::new_with_digests_only_for_tests([ExecutionDigests::random()]);
 
         let summary = CheckpointSummary::new(
             committee.epoch,
@@ -656,9 +741,9 @@ mod tests {
             .iter()
             .map(|k| {
                 let name = k.public().into();
-                let set = CheckpointContents::new_with_causally_ordered_transactions(
-                    [ExecutionDigests::random()].into_iter(),
-                );
+                let set = CheckpointContents::new_with_digests_only_for_tests([
+                    ExecutionDigests::random(),
+                ]);
 
                 SignedCheckpointSummary::new(
                     committee.epoch,
@@ -686,7 +771,7 @@ mod tests {
         assert!(
             CertifiedCheckpointSummary::new(summary, sign_infos, &committee)
                 .unwrap()
-                .verify_signature(&committee)
+                .verify_authority_signatures(&committee)
                 .is_err()
         )
     }

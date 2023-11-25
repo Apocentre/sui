@@ -11,8 +11,8 @@ use std::{
 };
 
 use crate::{
-    rocks::{be_fix_int_ser, TypedStoreError},
-    Map,
+    rocks::{be_fix_int_ser, errors::typed_store_err_from_bcs_err},
+    Map, TypedStoreError,
 };
 use bincode::Options;
 use collectable::TryExtend;
@@ -246,7 +246,7 @@ where
 
     fn insert(&self, key: &K, value: &V) -> Result<(), Self::Error> {
         let raw_key = be_fix_int_ser(key)?;
-        let raw_value = bcs::to_bytes(value)?;
+        let raw_value = bcs::to_bytes(value).map_err(typed_store_err_from_bcs_err)?;
         let mut locked = self.rows.write().unwrap();
         locked.insert(raw_key, raw_value);
         Ok(())
@@ -259,7 +259,13 @@ where
         Ok(())
     }
 
-    fn clear(&self) -> Result<(), Self::Error> {
+    fn unsafe_clear(&self) -> Result<(), Self::Error> {
+        let mut locked = self.rows.write().unwrap();
+        locked.clear();
+        Ok(())
+    }
+
+    fn schedule_delete_all(&self) -> Result<(), TypedStoreError> {
         let mut locked = self.rows.write().unwrap();
         locked.clear();
         Ok(())
@@ -270,7 +276,7 @@ where
         locked.is_empty()
     }
 
-    fn iter(&'a self) -> Self::Iterator {
+    fn unbounded_iter(&'a self) -> Self::Iterator {
         unimplemented!("umplemented API");
     }
 
@@ -465,8 +471,8 @@ impl TestDBWriteBatch {
         from: &K,
         to: &K,
     ) -> Result<(), TypedStoreError> {
-        let raw_from = be_fix_int_ser(from.borrow()).unwrap();
-        let raw_to = be_fix_int_ser(to.borrow()).unwrap();
+        let raw_from = be_fix_int_ser(from).unwrap();
+        let raw_to = be_fix_int_ser(to).unwrap();
         self.ops.push_back(WriteBatchOp::DeleteRange((
             db.rows.clone(),
             db.name.clone(),
@@ -712,7 +718,7 @@ mod test {
         let db: TestDB<i32, String> = TestDB::open();
 
         // Test clear of empty map
-        let _ = db.clear();
+        let _ = db.unsafe_clear();
 
         let keys_vals = (0..101).map(|i| (i, i.to_string()));
         let mut wb = db.batch();
@@ -723,15 +729,15 @@ mod test {
 
         // Check we have multiple entries
         assert!(db.safe_iter().count() > 1);
-        let _ = db.clear();
+        let _ = db.unsafe_clear();
         assert_eq!(db.safe_iter().count(), 0);
         // Clear again to ensure safety when clearing empty map
-        let _ = db.clear();
+        let _ = db.unsafe_clear();
         assert_eq!(db.safe_iter().count(), 0);
         // Clear with one item
         let _ = db.insert(&1, &"e".to_string());
         assert_eq!(db.safe_iter().count(), 1);
-        let _ = db.clear();
+        let _ = db.unsafe_clear();
         assert_eq!(db.safe_iter().count(), 0);
     }
 
@@ -741,7 +747,7 @@ mod test {
 
         // Test empty map is truly empty
         assert!(db.is_empty());
-        let _ = db.clear();
+        let _ = db.unsafe_clear();
         assert!(db.is_empty());
 
         let keys_vals = (0..101).map(|i| (i, i.to_string()));
@@ -756,7 +762,7 @@ mod test {
         assert!(!db.is_empty());
 
         // Clear again to ensure empty works after clearing
-        let _ = db.clear();
+        let _ = db.unsafe_clear();
         assert_eq!(db.safe_iter().count(), 0);
         assert!(db.is_empty());
     }

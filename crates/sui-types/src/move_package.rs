@@ -12,14 +12,11 @@ use crate::{
 };
 use derive_more::Display;
 use fastcrypto::hash::HashFunction;
+use move_binary_format::access::ModuleAccess;
+use move_binary_format::binary_views::BinaryIndexedView;
 use move_binary_format::file_format::CompiledModule;
 use move_binary_format::normalized;
-use move_binary_format::{
-    access::ModuleAccess,
-    compatibility::{Compatibility, InclusionCheck},
-    errors::PartialVMResult,
-};
-use move_binary_format::{binary_views::BinaryIndexedView, file_format::AbilitySet};
+use move_core_types::language_storage::ModuleId;
 use move_core_types::{
     account_address::AccountAddress,
     ident_str,
@@ -133,37 +130,6 @@ impl UpgradePolicy {
 
     pub fn is_valid_policy(policy: &u8) -> bool {
         Self::try_from(*policy).is_ok()
-    }
-
-    fn compatibility_check_for_protocol(protocol_config: &ProtocolConfig) -> Compatibility {
-        let disallowed_new_abilities = if protocol_config.disallow_adding_abilities_on_upgrade() {
-            AbilitySet::ALL
-        } else {
-            AbilitySet::EMPTY
-        };
-        Compatibility {
-            check_struct_and_pub_function_linking: true,
-            check_struct_layout: true,
-            check_friend_linking: false,
-            check_private_entry_linking: false,
-            disallowed_new_abilities,
-            disallow_change_struct_type_params: protocol_config
-                .disallow_change_struct_type_params_on_upgrade(),
-        }
-    }
-
-    pub fn check_compatibility(
-        &self,
-        old_module: &normalized::Module,
-        new_module: &normalized::Module,
-        protocol_config: &ProtocolConfig,
-    ) -> PartialVMResult<()> {
-        match self {
-            Self::Compatible => Self::compatibility_check_for_protocol(protocol_config)
-                .check(old_module, new_module),
-            Self::Additive => InclusionCheck::Subset.check(old_module, new_module),
-            Self::DepOnly => InclusionCheck::Equal.check(old_module, new_module),
-        }
     }
 }
 
@@ -415,6 +381,19 @@ impl MovePackage {
             type_origin_table,
             linkage_table,
         )
+    }
+
+    // Retrieve the module with `ModuleId` in the given package.
+    // The module must be the `storage_id` or the call will return `None`.
+    // Check if the address of the module is the same of the package
+    // and return `None` if that is not the case.
+    // All modules in a package share the address with the package.
+    pub fn get_module(&self, storage_id: &ModuleId) -> Option<&Vec<u8>> {
+        if self.id != ObjectID::from(*storage_id.address()) {
+            None
+        } else {
+            self.module_map.get(&storage_id.name().to_string())
+        }
     }
 
     /// Return the size of the package in bytes

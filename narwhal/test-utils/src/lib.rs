@@ -32,18 +32,17 @@ use std::{
 use store::rocks::DBMap;
 use store::rocks::MetricConf;
 use store::rocks::ReadWriteOptions;
+use sui_protocol_config::{Chain, ProtocolConfig, ProtocolVersion};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tracing::info;
 use types::{
-    Batch, BatchDigest, Certificate, CertificateAPI, CertificateDigest, FetchBatchesRequest,
-    FetchBatchesResponse, FetchCertificatesRequest, FetchCertificatesResponse,
-    GetCertificatesRequest, GetCertificatesResponse, Header, HeaderAPI, HeaderV1Builder,
-    PayloadAvailabilityRequest, PayloadAvailabilityResponse, PrimaryToPrimary,
-    PrimaryToPrimaryServer, PrimaryToWorker, PrimaryToWorkerServer, RequestBatchRequest,
-    RequestBatchResponse, RequestBatchesRequest, RequestBatchesResponse, RequestVoteRequest,
-    RequestVoteResponse, Round, SendCertificateRequest, SendCertificateResponse, TimestampMs,
-    Transaction, Vote, VoteAPI, WorkerBatchMessage, WorkerDeleteBatchesMessage,
-    WorkerSynchronizeMessage, WorkerToWorker, WorkerToWorkerServer,
+    Batch, BatchDigest, BatchV1, Certificate, CertificateAPI, CertificateDigest,
+    FetchBatchesRequest, FetchBatchesResponse, FetchCertificatesRequest, FetchCertificatesResponse,
+    Header, HeaderAPI, HeaderV2Builder, PrimaryToPrimary, PrimaryToPrimaryServer, PrimaryToWorker,
+    PrimaryToWorkerServer, RequestBatchesRequest, RequestBatchesResponse, RequestVoteRequest,
+    RequestVoteResponse, Round, SendCertificateRequest, SendCertificateResponse,
+    SendRandomnessPartialSignaturesRequest, TimestampMs, Transaction, Vote, VoteAPI,
+    WorkerBatchMessage, WorkerSynchronizeMessage, WorkerToWorker, WorkerToWorkerServer,
 };
 
 pub mod cluster;
@@ -54,6 +53,14 @@ pub const CERTIFICATES_CF: &str = "certificates";
 pub const CERTIFICATE_DIGEST_BY_ROUND_CF: &str = "certificate_digest_by_round";
 pub const CERTIFICATE_DIGEST_BY_ORIGIN_CF: &str = "certificate_digest_by_origin";
 pub const PAYLOAD_CF: &str = "payload";
+
+pub fn latest_protocol_version() -> ProtocolConfig {
+    ProtocolConfig::get_for_version(ProtocolVersion::max(), Chain::Unknown)
+}
+
+pub fn get_protocol_config(version_number: u64) -> ProtocolConfig {
+    ProtocolConfig::get_for_version(ProtocolVersion::new(version_number), Chain::Unknown)
+}
 
 pub fn temp_dir() -> std::path::PathBuf {
     tempfile::tempdir()
@@ -72,7 +79,7 @@ pub fn ensure_test_environment() {
 #[macro_export]
 macro_rules! test_channel {
     ($e:expr) => {
-        types::metered_channel::channel(
+        mysten_metrics::metered_channel::channel(
             $e,
             &prometheus::IntGauge::new("TEST_COUNTER", "test counter").unwrap(),
         );
@@ -92,7 +99,7 @@ macro_rules! test_channel {
 #[macro_export]
 macro_rules! test_committed_certificates_channel {
     ($e:expr) => {
-        types::metered_channel::channel(
+        mysten_metrics::metered_channel::channel(
             $e,
             &prometheus::IntGauge::new(
                 primary::PrimaryChannelMetrics::NAME_COMMITTED_CERTS,
@@ -106,7 +113,7 @@ macro_rules! test_committed_certificates_channel {
 #[macro_export]
 macro_rules! test_new_certificates_channel {
     ($e:expr) => {
-        types::metered_channel::channel(
+        mysten_metrics::metered_channel::channel(
             $e,
             &prometheus::IntGauge::new(
                 primary::PrimaryChannelMetrics::NAME_NEW_CERTS,
@@ -128,11 +135,14 @@ pub fn random_key() -> KeyPair {
 ////////////////////////////////////////////////////////////////
 /// Headers, Votes, Certificates
 ////////////////////////////////////////////////////////////////
-pub fn fixture_payload(number_of_batches: u8) -> IndexMap<BatchDigest, (WorkerId, TimestampMs)> {
+pub fn fixture_payload(
+    number_of_batches: u8,
+    protocol_config: &ProtocolConfig,
+) -> IndexMap<BatchDigest, (WorkerId, TimestampMs)> {
     let mut payload: IndexMap<BatchDigest, (WorkerId, TimestampMs)> = IndexMap::new();
 
     for _ in 0..number_of_batches {
-        let batch_digest = batch().digest();
+        let batch_digest = batch(protocol_config).digest();
 
         payload.insert(batch_digest, (0, 0));
     }
@@ -142,22 +152,26 @@ pub fn fixture_payload(number_of_batches: u8) -> IndexMap<BatchDigest, (WorkerId
 
 // will create a batch with randomly formed transactions
 // dictated by the parameter number_of_transactions
-pub fn fixture_batch_with_transactions(number_of_transactions: u32) -> Batch {
+pub fn fixture_batch_with_transactions(
+    number_of_transactions: u32,
+    protocol_config: &ProtocolConfig,
+) -> Batch {
     let transactions = (0..number_of_transactions)
         .map(|_v| transaction())
         .collect();
 
-    Batch::new(transactions)
+    Batch::new(transactions, protocol_config)
 }
 
 pub fn fixture_payload_with_rand<R: Rng + ?Sized>(
     number_of_batches: u8,
     rand: &mut R,
+    protocol_config: &ProtocolConfig,
 ) -> IndexMap<BatchDigest, (WorkerId, TimestampMs)> {
     let mut payload: IndexMap<BatchDigest, (WorkerId, TimestampMs)> = IndexMap::new();
 
     for _ in 0..number_of_batches {
-        let batch_digest = batch_with_rand(rand).digest();
+        let batch_digest = batch_with_rand(rand, protocol_config).digest();
 
         payload.insert(batch_digest, (0, 0));
     }
@@ -172,11 +186,11 @@ pub fn transaction_with_rand<R: Rng + ?Sized>(rand: &mut R) -> Transaction {
         .collect()
 }
 
-pub fn batch_with_rand<R: Rng + ?Sized>(rand: &mut R) -> Batch {
-    Batch::new(vec![
-        transaction_with_rand(rand),
-        transaction_with_rand(rand),
-    ])
+pub fn batch_with_rand<R: Rng + ?Sized>(rand: &mut R, protocol_config: &ProtocolConfig) -> Batch {
+    Batch::new(
+        vec![transaction_with_rand(rand), transaction_with_rand(rand)],
+        protocol_config,
+    )
 }
 
 // Fixture
@@ -231,23 +245,18 @@ impl PrimaryToPrimary for PrimaryToPrimaryMockServer {
     ) -> Result<anemo::Response<RequestVoteResponse>, anemo::rpc::Status> {
         unimplemented!()
     }
-    async fn get_certificates(
+
+    async fn send_randomness_partial_signatures(
         &self,
-        _request: anemo::Request<GetCertificatesRequest>,
-    ) -> Result<anemo::Response<GetCertificatesResponse>, anemo::rpc::Status> {
+        _request: anemo::Request<SendRandomnessPartialSignaturesRequest>,
+    ) -> Result<anemo::Response<()>, anemo::rpc::Status> {
         unimplemented!()
     }
+
     async fn fetch_certificates(
         &self,
         _request: anemo::Request<FetchCertificatesRequest>,
     ) -> Result<anemo::Response<FetchCertificatesResponse>, anemo::rpc::Status> {
-        unimplemented!()
-    }
-
-    async fn get_payload_availability(
-        &self,
-        _request: anemo::Request<PayloadAvailabilityRequest>,
-    ) -> Result<anemo::Response<PayloadAvailabilityResponse>, anemo::rpc::Status> {
         unimplemented!()
     }
 }
@@ -296,14 +305,6 @@ impl PrimaryToWorker for PrimaryToWorkerMockServer {
             batches: HashMap::new(),
         }))
     }
-
-    async fn delete_batches(
-        &self,
-        _request: anemo::Request<WorkerDeleteBatchesMessage>,
-    ) -> Result<anemo::Response<()>, anemo::rpc::Status> {
-        tracing::error!("Not implemented PrimaryToWorkerMockServer::delete_batches");
-        Err(anemo::rpc::Status::internal("Unimplemented"))
-    }
 }
 
 pub struct WorkerToWorkerMockServer {
@@ -342,13 +343,6 @@ impl WorkerToWorker for WorkerToWorkerMockServer {
 
         Ok(anemo::Response::new(()))
     }
-    async fn request_batch(
-        &self,
-        _request: anemo::Request<RequestBatchRequest>,
-    ) -> Result<anemo::Response<RequestBatchResponse>, anemo::rpc::Status> {
-        tracing::error!("Not implemented WorkerToWorkerMockServer::request_batch");
-        Err(anemo::rpc::Status::internal("Unimplemented"))
-    }
 
     async fn request_batches(
         &self,
@@ -364,30 +358,38 @@ impl WorkerToWorker for WorkerToWorkerMockServer {
 ////////////////////////////////////////////////////////////////
 
 // Fixture
-pub fn batch() -> Batch {
-    Batch::new(vec![transaction(), transaction()])
+pub fn batch(protocol_config: &ProtocolConfig) -> Batch {
+    let transactions = vec![transaction(), transaction()];
+    // TODO: Remove once we have removed BatchV1 from the codebase.
+    if protocol_config.version < ProtocolVersion::new(12) {
+        return Batch::V1(BatchV1::new(transactions));
+    }
+    Batch::new(transactions, protocol_config)
 }
 
 /// generate multiple fixture batches. The number of generated batches
 /// are dictated by the parameter num_of_batches.
-pub fn batches(num_of_batches: usize) -> Vec<Batch> {
+pub fn batches(num_of_batches: usize, protocol_config: &ProtocolConfig) -> Vec<Batch> {
     let mut batches = Vec::new();
 
     for i in 1..num_of_batches + 1 {
-        batches.push(batch_with_transactions(i));
+        batches.push(batch_with_transactions(i, protocol_config));
     }
 
     batches
 }
 
-pub fn batch_with_transactions(num_of_transactions: usize) -> Batch {
+pub fn batch_with_transactions(
+    num_of_transactions: usize,
+    protocol_config: &ProtocolConfig,
+) -> Batch {
     let mut transactions = Vec::new();
 
     for _ in 0..num_of_transactions {
         transactions.push(transaction());
     }
 
-    Batch::new(transactions)
+    Batch::new(transactions, protocol_config)
 }
 
 const BATCHES_CF: &str = "batches";
@@ -409,11 +411,12 @@ pub fn create_batch_store() -> DBMap<BatchDigest, Batch> {
 // Note : the certificates are unsigned
 pub fn make_optimal_certificates(
     committee: &Committee,
+    protocol_config: &ProtocolConfig,
     range: RangeInclusive<Round>,
     initial_parents: &BTreeSet<CertificateDigest>,
     ids: &[AuthorityIdentifier],
 ) -> (VecDeque<Certificate>, BTreeSet<CertificateDigest>) {
-    make_certificates(committee, range, initial_parents, ids, 0.0)
+    make_certificates(committee, protocol_config, range, initial_parents, ids, 0.0)
 }
 
 // Outputs rounds worth of certificates with optimal parents, signed
@@ -421,9 +424,17 @@ pub fn make_optimal_signed_certificates(
     range: RangeInclusive<Round>,
     initial_parents: &BTreeSet<CertificateDigest>,
     committee: &Committee,
+    protocol_config: &ProtocolConfig,
     keys: &[(AuthorityIdentifier, KeyPair)],
 ) -> (VecDeque<Certificate>, BTreeSet<CertificateDigest>) {
-    make_signed_certificates(range, initial_parents, committee, keys, 0.0)
+    make_signed_certificates(
+        range,
+        initial_parents,
+        committee,
+        protocol_config,
+        keys,
+        0.0,
+    )
 }
 
 // Bernoulli-samples from a set of ancestors passed as a argument,
@@ -475,12 +486,14 @@ fn rounds_of_certificates(
 // make rounds worth of unsigned certificates with the sampled number of parents
 pub fn make_certificates(
     committee: &Committee,
+    protocol_config: &ProtocolConfig,
     range: RangeInclusive<Round>,
     initial_parents: &BTreeSet<CertificateDigest>,
     ids: &[AuthorityIdentifier],
     failure_probability: f64,
 ) -> (VecDeque<Certificate>, BTreeSet<CertificateDigest>) {
-    let generator = |pk, round, parents| mock_certificate(committee, pk, round, parents);
+    let generator =
+        |pk, round, parents| mock_certificate(committee, protocol_config, pk, round, parents);
 
     rounds_of_certificates(range, initial_parents, ids, failure_probability, generator)
 }
@@ -495,6 +508,7 @@ pub fn make_certificates(
 // produced.
 pub fn make_certificates_with_slow_nodes(
     committee: &Committee,
+    protocol_config: &ProtocolConfig,
     range: RangeInclusive<Round>,
     initial_parents: Vec<Certificate>,
     names: &[AuthorityIdentifier],
@@ -525,9 +539,128 @@ pub fn make_certificates_with_slow_nodes(
                 committee,
             );
 
-            let (_, certificate) = mock_certificate(committee, *name, round, this_cert_parents);
+            let (_, certificate) =
+                mock_certificate(committee, protocol_config, *name, round, this_cert_parents);
             certificates.push_back(certificate.clone());
             next_parents.push(certificate);
+        }
+        parents = next_parents.clone();
+    }
+    (certificates, next_parents)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TestLeaderSupport {
+    // There will be support for the leader, but less than f+1
+    Weak,
+    // There will be strong support for the leader, meaning >= f+1
+    Strong,
+    // Leader will be completely ommitted by the voters
+    NoSupport,
+}
+
+pub struct TestLeaderConfiguration {
+    // The round of the leader
+    pub round: Round,
+    // The leader id. That allow us to explicitly dictate which we consider the leader to be
+    pub authority: AuthorityIdentifier,
+    // If true then the leader for that round will not be created at all
+    pub should_omit: bool,
+    // The support that this leader should receive from the voters of next round
+    pub support: Option<TestLeaderSupport>,
+}
+
+/// Creates fully connected DAG for the dictated rounds but with specific conditions for the leaders.
+/// By providing the `leader_configuration` we can dictate the setup for specific leaders of specific rounds.
+/// For a leader the following can be configured:
+/// * whether a leader will exist or not for a round
+/// * whether a leader will receive enough support from the next round
+pub fn make_certificates_with_leader_configuration(
+    committee: &Committee,
+    protocol_config: &ProtocolConfig,
+    range: RangeInclusive<Round>,
+    initial_parents: &BTreeSet<CertificateDigest>,
+    names: &[AuthorityIdentifier],
+    leader_configurations: HashMap<Round, TestLeaderConfiguration>,
+) -> (VecDeque<Certificate>, BTreeSet<CertificateDigest>) {
+    for round in leader_configurations.keys() {
+        assert_eq!(round % 2, 0, "Leaders are elected only on even rounds");
+    }
+
+    let mut certificates: VecDeque<Certificate> = VecDeque::new();
+    let mut parents = initial_parents.iter().cloned().collect::<BTreeSet<_>>();
+    let mut next_parents = BTreeSet::new();
+
+    for round in range {
+        next_parents.clear();
+
+        for name in names {
+            // should we produce the leader of that round?
+            if let Some(leader_config) = leader_configurations.get(&round) {
+                if leader_config.should_omit && leader_config.authority == *name {
+                    // just skip and don't create the certificate for this authority
+                    continue;
+                }
+            }
+
+            // we now check for the leader of previous round. If should not be omitted we need to check
+            // on the support we are supposed to provide
+            let cert_parents = if round > 0 {
+                if let Some(leader_config) = leader_configurations.get(&(round - 1)) {
+                    match leader_config.support {
+                        Some(TestLeaderSupport::Weak) => {
+                            // find the leader from the previous round
+                            let leader_certificate = certificates
+                                .iter()
+                                .find(|c| {
+                                    c.round() == round - 1 && c.origin() == leader_config.authority
+                                })
+                                .unwrap();
+
+                            // check whether anyone from the current round already included it
+                            // if yes, then we should remove it and not vote again.
+                            if certificates.iter().any(|c| {
+                                c.round() == round
+                                    && c.header().parents().contains(&leader_certificate.digest())
+                            }) {
+                                let mut p = parents.clone();
+                                p.remove(&leader_certificate.digest());
+                                p
+                            } else {
+                                // otherwise return all the parents
+                                parents.clone()
+                            }
+                        }
+                        Some(TestLeaderSupport::Strong) => {
+                            // just return the whole parent set so we can vote for it
+                            parents.clone()
+                        }
+                        Some(TestLeaderSupport::NoSupport) => {
+                            // remove the leader from the set of parents
+                            let c = certificates
+                                .iter()
+                                .find(|c| {
+                                    c.round() == round - 1 && c.origin() == leader_config.authority
+                                })
+                                .unwrap();
+                            let mut p = parents.clone();
+                            p.remove(&c.digest());
+                            p
+                        }
+                        None => parents.clone(),
+                    }
+                } else {
+                    parents.clone()
+                }
+            } else {
+                parents.clone()
+            };
+
+            // Create the certificates
+            let (_, certificate) =
+                mock_certificate(committee, protocol_config, *name, round, cert_parents);
+            certificates.push_back(certificate.clone());
+            next_parents.insert(certificate.digest());
         }
         parents = next_parents.clone();
     }
@@ -600,6 +733,7 @@ pub fn this_cert_parents_with_slow_nodes(
 // make rounds worth of unsigned certificates with the sampled number of parents
 pub fn make_certificates_with_epoch(
     committee: &Committee,
+    protocol_config: &ProtocolConfig,
     range: RangeInclusive<Round>,
     epoch: Epoch,
     initial_parents: &BTreeSet<CertificateDigest>,
@@ -612,8 +746,14 @@ pub fn make_certificates_with_epoch(
     for round in range {
         next_parents.clear();
         for name in keys {
-            let (digest, certificate) =
-                mock_certificate_with_epoch(committee, *name, round, epoch, parents.clone());
+            let (digest, certificate) = mock_certificate_with_epoch(
+                committee,
+                protocol_config,
+                *name,
+                round,
+                epoch,
+                parents.clone(),
+            );
             certificates.push_back(certificate);
             next_parents.insert(digest);
         }
@@ -627,6 +767,7 @@ pub fn make_signed_certificates(
     range: RangeInclusive<Round>,
     initial_parents: &BTreeSet<CertificateDigest>,
     committee: &Committee,
+    protocol_config: &ProtocolConfig,
     keys: &[(AuthorityIdentifier, KeyPair)],
     failure_probability: f64,
 ) -> (VecDeque<Certificate>, BTreeSet<CertificateDigest>) {
@@ -634,8 +775,9 @@ pub fn make_signed_certificates(
         .iter()
         .map(|(authority, _)| *authority)
         .collect::<Vec<_>>();
-    let generator =
-        |pk, round, parents| mock_signed_certificate(keys, pk, round, parents, committee);
+    let generator = |pk, round, parents| {
+        mock_signed_certificate(keys, pk, round, parents, committee, protocol_config)
+    };
 
     rounds_of_certificates(
         range,
@@ -648,21 +790,24 @@ pub fn make_signed_certificates(
 
 pub fn mock_certificate_with_rand<R: RngCore + ?Sized>(
     committee: &Committee,
+    protocol_config: &ProtocolConfig,
     origin: AuthorityIdentifier,
     round: Round,
     parents: BTreeSet<CertificateDigest>,
     rand: &mut R,
 ) -> (CertificateDigest, Certificate) {
-    let header_builder = HeaderV1Builder::default();
+    let header_builder = HeaderV2Builder::default();
     let header = header_builder
         .author(origin)
         .round(round)
         .epoch(0)
         .parents(parents)
-        .payload(fixture_payload_with_rand(1, rand))
+        .payload(fixture_payload_with_rand(1, rand, protocol_config))
         .build()
         .unwrap();
-    let certificate = Certificate::new_unsigned(committee, Header::V1(header), Vec::new()).unwrap();
+    let certificate =
+        Certificate::new_unsigned(protocol_config, committee, Header::V2(header), Vec::new())
+            .unwrap();
     (certificate.digest(), certificate)
 }
 
@@ -670,32 +815,36 @@ pub fn mock_certificate_with_rand<R: RngCore + ?Sized>(
 // Note: the certificate is signed by a random key rather than its author
 pub fn mock_certificate(
     committee: &Committee,
+    protocol_config: &ProtocolConfig,
     origin: AuthorityIdentifier,
     round: Round,
     parents: BTreeSet<CertificateDigest>,
 ) -> (CertificateDigest, Certificate) {
-    mock_certificate_with_epoch(committee, origin, round, 0, parents)
+    mock_certificate_with_epoch(committee, protocol_config, origin, round, 0, parents)
 }
 
 // Creates a badly signed certificate from its given round, epoch, origin, and parents,
 // Note: the certificate is signed by a random key rather than its author
 pub fn mock_certificate_with_epoch(
     committee: &Committee,
+    protocol_config: &ProtocolConfig,
     origin: AuthorityIdentifier,
     round: Round,
     epoch: Epoch,
     parents: BTreeSet<CertificateDigest>,
 ) -> (CertificateDigest, Certificate) {
-    let header_builder = HeaderV1Builder::default();
+    let header_builder = HeaderV2Builder::default();
     let header = header_builder
         .author(origin)
         .round(round)
         .epoch(epoch)
         .parents(parents)
-        .payload(fixture_payload(1))
+        .payload(fixture_payload(1, protocol_config))
         .build()
         .unwrap();
-    let certificate = Certificate::new_unsigned(committee, Header::V1(header), Vec::new()).unwrap();
+    let certificate =
+        Certificate::new_unsigned(protocol_config, committee, Header::V2(header), Vec::new())
+            .unwrap();
     (certificate.digest(), certificate)
 }
 
@@ -706,25 +855,32 @@ pub fn mock_signed_certificate(
     round: Round,
     parents: BTreeSet<CertificateDigest>,
     committee: &Committee,
+    protocol_config: &ProtocolConfig,
 ) -> (CertificateDigest, Certificate) {
-    let header_builder = HeaderV1Builder::default()
+    let header_builder = HeaderV2Builder::default()
         .author(origin)
-        .payload(fixture_payload(1))
+        .payload(fixture_payload(1, protocol_config))
         .round(round)
         .epoch(0)
         .parents(parents);
 
     let header = header_builder.build().unwrap();
 
-    let cert =
-        Certificate::new_unsigned(committee, Header::V1(header.clone()), Vec::new()).unwrap();
+    let cert = Certificate::new_unsigned(
+        protocol_config,
+        committee,
+        Header::V2(header.clone()),
+        Vec::new(),
+    )
+    .unwrap();
 
     let mut votes = Vec::new();
     for (name, signer) in signers {
         let sig = Signature::new_secure(&to_intent_message(cert.header().digest()), signer);
         votes.push((*name, sig))
     }
-    let cert = Certificate::new_unverified(committee, Header::V1(header), votes).unwrap();
+    let cert =
+        Certificate::new_unverified(protocol_config, committee, Header::V2(header), votes).unwrap();
     (cert.digest(), cert)
 }
 
@@ -734,6 +890,7 @@ pub struct Builder<R = OsRng> {
     number_of_workers: NonZeroUsize,
     randomize_ports: bool,
     epoch: Epoch,
+    protocol_version: ProtocolVersion,
     stake: VecDeque<Stake>,
 }
 
@@ -747,6 +904,7 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             epoch: Epoch::default(),
+            protocol_version: ProtocolVersion::max(),
             rng: OsRng,
             committee_size: NonZeroUsize::new(4).unwrap(),
             number_of_workers: NonZeroUsize::new(4).unwrap(),
@@ -777,6 +935,11 @@ impl<R> Builder<R> {
         self
     }
 
+    pub fn protocol_version(mut self, protocol_version: ProtocolVersion) -> Self {
+        self.protocol_version = protocol_version;
+        self
+    }
+
     pub fn stake_distribution(mut self, stake: VecDeque<Stake>) -> Self {
         self.stake = stake;
         self
@@ -786,6 +949,7 @@ impl<R> Builder<R> {
         Builder {
             rng,
             epoch: self.epoch,
+            protocol_version: self.protocol_version,
             committee_size: self.committee_size,
             number_of_workers: self.number_of_workers,
             randomize_ports: self.randomize_ports,
@@ -828,6 +992,7 @@ impl<R: rand::RngCore + rand::CryptoRng> Builder<R> {
                 self.stake.pop_front().unwrap_or(1),
                 a.address.clone(),
                 a.network_public_key(),
+                a.address.to_string(),
             );
         }
         let committee = committee_builder.build();
@@ -865,6 +1030,10 @@ pub struct CommitteeFixture {
 }
 
 impl CommitteeFixture {
+    pub fn authority(&self, index: usize) -> &AuthorityFixture {
+        &self.authorities[index]
+    }
+
     pub fn authorities(&self) -> impl Iterator<Item = &AuthorityFixture> {
         self.authorities.iter()
     }
@@ -890,24 +1059,27 @@ impl CommitteeFixture {
 
     // pub fn header(&self, author: PublicKey) -> Header {
     // Currently sign with the last authority
-    pub fn header(&self) -> Header {
-        self.authorities.last().unwrap().header(&self.committee())
+    pub fn header(&self, protocol_config: &ProtocolConfig) -> Header {
+        self.authorities
+            .last()
+            .unwrap()
+            .header(protocol_config, &self.committee())
     }
 
-    pub fn headers(&self) -> Vec<Header> {
+    pub fn headers(&self, protocol_config: &ProtocolConfig) -> Vec<Header> {
         let committee = self.committee();
 
         self.authorities
             .iter()
-            .map(|a| a.header_with_round(&committee, 1))
+            .map(|a| a.header_with_round(protocol_config, &committee, 1))
             .collect()
     }
 
-    pub fn headers_next_round(&self) -> Vec<Header> {
+    pub fn headers_next_round(&self, protocol_config: &ProtocolConfig) -> Vec<Header> {
         let committee = self.committee();
         self.authorities
             .iter()
-            .map(|a| a.header_with_round(&committee, 2))
+            .map(|a| a.header_with_round(protocol_config, &committee, 2))
             .collect()
     }
 
@@ -915,22 +1087,23 @@ impl CommitteeFixture {
         &self,
         prior_round: Round,
         parents: &BTreeSet<CertificateDigest>,
+        protocol_config: &ProtocolConfig,
     ) -> (Round, Vec<Header>) {
         let round = prior_round + 1;
         let next_headers = self
             .authorities
             .iter()
             .map(|a| {
-                let builder = types::HeaderV1Builder::default();
+                let builder = types::HeaderV2Builder::default();
                 let header = builder
                     .author(a.id())
                     .round(round)
                     .epoch(0)
                     .parents(parents.clone())
-                    .with_payload_batch(fixture_batch_with_transactions(10), 0, 0)
+                    .with_payload_batch(fixture_batch_with_transactions(10, protocol_config), 0, 0)
                     .build()
                     .unwrap();
-                Header::V1(header)
+                Header::V2(header)
             })
             .collect();
 
@@ -951,14 +1124,14 @@ impl CommitteeFixture {
             .collect()
     }
 
-    pub fn certificate(&self, header: &Header) -> Certificate {
+    pub fn certificate(&self, protocol_config: &ProtocolConfig, header: &Header) -> Certificate {
         let committee = self.committee();
         let votes: Vec<_> = self
             .votes(header)
             .into_iter()
             .map(|x| (x.author(), x.signature().clone()))
             .collect();
-        Certificate::new_unverified(&committee, header.clone(), votes).unwrap()
+        Certificate::new_unverified(protocol_config, &committee, header.clone(), votes).unwrap()
     }
 }
 
@@ -1028,32 +1201,41 @@ impl AuthorityFixture {
         )
     }
 
-    pub fn header(&self, committee: &Committee) -> Header {
+    pub fn header(&self, protocol_config: &ProtocolConfig, committee: &Committee) -> Header {
         let header = self
-            .header_builder(committee)
+            .header_builder(protocol_config, committee)
             .payload(Default::default())
             .build()
             .unwrap();
-        Header::V1(header)
+        Header::V2(header)
     }
 
-    pub fn header_with_round(&self, committee: &Committee, round: Round) -> Header {
+    pub fn header_with_round(
+        &self,
+        protocol_config: &ProtocolConfig,
+        committee: &Committee,
+        round: Round,
+    ) -> Header {
         let header = self
-            .header_builder(committee)
+            .header_builder(protocol_config, committee)
             .payload(Default::default())
             .round(round)
             .build()
             .unwrap();
-        Header::V1(header)
+        Header::V2(header)
     }
 
-    pub fn header_builder(&self, committee: &Committee) -> types::HeaderV1Builder {
-        types::HeaderV1Builder::default()
+    pub fn header_builder(
+        &self,
+        protocol_config: &ProtocolConfig,
+        committee: &Committee,
+    ) -> types::HeaderV2Builder {
+        types::HeaderV2Builder::default()
             .author(self.id())
             .round(1)
             .epoch(committee.epoch())
             .parents(
-                Certificate::genesis(committee)
+                Certificate::genesis(protocol_config, committee)
                     .iter()
                     .map(|x| x.digest())
                     .collect(),

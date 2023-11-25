@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use jsonrpsee::core::RpcResult;
-use jsonrpsee_proc_macros::rpc;
+use jsonrpsee::proc_macros::rpc;
 
 use sui_json_rpc_types::SuiTransactionBlockEffects;
 use sui_json_rpc_types::{
@@ -55,7 +55,7 @@ pub trait IndexerApi {
     #[method(name = "queryEvents")]
     async fn query_events(
         &self,
-        /// the event query criteria.
+        /// The event query criteria. See [Event filter](https://docs.sui.io/build/event_api#event-filters) documentation for examples.
         query: EventFilter,
         /// optional paging cursor
         cursor: Option<EventID>,
@@ -69,7 +69,7 @@ pub trait IndexerApi {
     #[subscription(name = "subscribeEvent", item = SuiEvent)]
     fn subscribe_event(
         &self,
-        /// the filter criteria of the event stream, see the [Sui docs](https://docs.sui.io/build/pubsub#event-filters) for detailed examples.
+        /// The filter criteria of the event stream. See [Event filter](https://docs.sui.io/build/event_api#event-filters) documentation for examples.
         filter: EventFilter,
     );
 

@@ -72,7 +72,7 @@ pub mod util;
 pub mod workloads;
 use futures::FutureExt;
 use sui_types::messages_grpc::{HandleCertificateResponse, TransactionStatus};
-use sui_types::quorum_driver_types::QuorumDriverResponse;
+use sui_types::quorum_driver_types::{QuorumDriverError, QuorumDriverResponse};
 
 #[derive(Debug)]
 /// A wrapper on execution results to accommodate different types of
@@ -100,7 +100,7 @@ impl ExecutionEffects {
     pub fn created(&self) -> Vec<(ObjectRef, Owner)> {
         match self {
             ExecutionEffects::CertifiedTransactionEffects(certified_effects, ..) => {
-                certified_effects.data().created().to_vec()
+                certified_effects.data().created()
             }
             ExecutionEffects::SuiTransactionBlockEffects(sui_tx_effects) => sui_tx_effects
                 .created()
@@ -135,7 +135,7 @@ impl ExecutionEffects {
     pub fn gas_object(&self) -> (ObjectRef, Owner) {
         match self {
             ExecutionEffects::CertifiedTransactionEffects(certified_effects, ..) => {
-                *certified_effects.data().gas_object()
+                certified_effects.data().gas_object()
             }
             ExecutionEffects::SuiTransactionBlockEffects(sui_tx_effects) => {
                 let refe = &sui_tx_effects.gas_object();
@@ -359,7 +359,6 @@ impl ValidatorProxy for LocalValidatorAggregatorProxy {
             return self.execute_bench_transaction(tx).await;
         }
         let tx_digest = *tx.digest();
-        let tx = tx.verify()?;
         let mut retry_cnt = 0;
         while retry_cnt < 3 {
             let ticket = self.qd.submit_transaction(tx.clone()).await?;
@@ -369,12 +368,14 @@ impl ValidatorProxy for LocalValidatorAggregatorProxy {
                     let QuorumDriverResponse {
                         effects_cert,
                         events,
-                        ..
                     } = resp;
                     return Ok(ExecutionEffects::CertifiedTransactionEffects(
                         effects_cert.into(),
                         events,
                     ));
+                }
+                Err(QuorumDriverError::NonRecoverableTransactionError { errors }) => {
+                    bail!(QuorumDriverError::NonRecoverableTransactionError { errors });
                 }
                 Err(err) => {
                     let delay = Duration::from_millis(rand::thread_rng().gen_range(100..1000));
@@ -721,7 +722,6 @@ impl ValidatorProxy for FullNodeProxy {
 
     async fn execute_transaction_block(&self, tx: Transaction) -> anyhow::Result<ExecutionEffects> {
         let tx_digest = *tx.digest();
-        let tx = tx.verify()?;
         let mut retry_cnt = 0;
         while retry_cnt < 10 {
             // Fullnode could time out after WAIT_FOR_FINALITY_TIMEOUT (30s) in TransactionOrchestrator
@@ -859,6 +859,9 @@ impl From<CallArg> for BenchMoveCallArg {
                     initial_shared_version,
                     mutable,
                 } => BenchMoveCallArg::Shared((id, initial_shared_version, mutable)),
+                ObjectArg::Receiving(_) => {
+                    unimplemented!("Receiving is not supported for benchmarks")
+                }
             },
         }
     }
