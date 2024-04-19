@@ -5,7 +5,7 @@ mod builder;
 pub mod interface;
 
 // TODO remove the pub(crater) once indexer.rs is renamed to lib.rs
-pub(crate) mod fetcher;
+pub mod fetcher;
 pub(crate) mod runner;
 
 pub use builder::IndexerBuilder;

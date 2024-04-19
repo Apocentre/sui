@@ -220,6 +220,20 @@ impl<S> CheckpointHandler<S>
 where
     S: IndexerStore + Clone + Sync + Send + 'static,
 {
+    pub fn new(
+        state: S,
+        metrics: IndexerMetrics,
+        indexed_checkpoint_sender: mysten_metrics::metered_channel::Sender<CheckpointDataToCommit>,
+        package_buffer: Arc<Mutex<IndexingPackageBuffer>>,
+    ) -> Self {
+        Self {
+            state,
+            metrics,
+            indexed_checkpoint_sender,
+            package_buffer,
+        }
+    }
+
     async fn index_epoch(
         state: Arc<S>,
         data: &CheckpointData,
