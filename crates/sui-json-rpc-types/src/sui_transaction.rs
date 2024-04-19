@@ -619,10 +619,10 @@ pub trait SuiTransactionBlockEffectsAPI {
     rename_all = "camelCase"
 )]
 pub struct SuiTransactionBlockEffectsModifiedAtVersions {
-    object_id: ObjectID,
+    pub object_id: ObjectID,
     #[schemars(with = "AsSequenceNumber")]
     #[serde_as(as = "AsSequenceNumber")]
-    sequence_number: SequenceNumber,
+    pub sequence_number: SequenceNumber,
 }
 
 /// The response from processing a transaction or a certified transaction

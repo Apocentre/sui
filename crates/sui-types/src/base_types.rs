@@ -161,6 +161,12 @@ pub fn update_object_ref_for_testing(object_ref: ObjectRef) -> ObjectRef {
 #[derive(Eq, PartialEq, PartialOrd, Ord, Debug, Clone, Deserialize, Serialize, Hash)]
 pub struct MoveObjectType(MoveObjectType_);
 
+impl MoveObjectType {
+  pub fn into_inner(self) -> MoveObjectType_ {
+    self.0
+  }
+}
+
 /// Even though it is declared public, it is the "private", internal representation for
 /// `MoveObjectType`
 #[derive(Eq, PartialEq, PartialOrd, Ord, Debug, Clone, Deserialize, Serialize, Hash)]
