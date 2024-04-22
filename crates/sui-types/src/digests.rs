@@ -946,6 +946,10 @@ impl ConsensusCommitDigest {
     pub fn random() -> Self {
         Self(Digest::random())
     }
+
+    pub fn base58_encode(&self) -> String {
+        Base58::encode(self.0)
+    }
 }
 
 impl Default for ConsensusCommitDigest {
