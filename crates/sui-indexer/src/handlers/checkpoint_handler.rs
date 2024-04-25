@@ -33,8 +33,7 @@ use crate::metrics::IndexerMetrics;
 
 use crate::store::IndexerStore;
 use crate::types::{
-    IndexedCheckpoint, IndexedEvent,
-    IndexedPackage, IndexedTransaction, IndexerResult, TransactionKind, TxIndex,
+    IndexedCheckpoint, IndexedDeletedObject, IndexedEvent, IndexedObject, IndexedPackage, IndexedTransaction, IndexerResult, TransactionKind, TxIndex
 };
 
 use super::tx_processor::TxChangesProcessor;
@@ -197,6 +196,14 @@ impl CheckpointHandler {
         let checkpoint_seq = data.checkpoint_summary.sequence_number;
         info!(checkpoint_seq, "Indexing checkpoint data blob");
 
+        let object_changes: TransactionObjectChangesToCommit = Self::index_objects(data.clone(), &metrics).await?;
+        
+        // NULL object
+        let object_history_changes = TransactionObjectChangesToCommit {
+            changed_objects: vec![],
+            deleted_objects: vec![],
+        };
+
         let (checkpoint, db_transactions, db_events, db_indices, db_displays) = {
             let CheckpointData {
                 transactions,
@@ -225,16 +232,6 @@ impl CheckpointHandler {
                 db_displays,
             )
         };
-
-        // NULL objects
-        let object_changes = TransactionObjectChangesToCommit {
-            changed_objects: vec![],
-            deleted_objects: vec![],
-        };
-        let object_history_changes = TransactionObjectChangesToCommit {
-            changed_objects: vec![],
-            deleted_objects: vec![],
-        };
                 
         info!(checkpoint_seq, "Indexed one checkpoint.");
         Ok(CheckpointDataToCommit {
@@ -248,6 +245,75 @@ impl CheckpointHandler {
             packages,
             epoch: None,
         })
+    }
+
+    async fn index_objects(
+      data: CheckpointData,
+      metrics: &IndexerMetrics,
+    ) -> Result<TransactionObjectChangesToCommit, IndexerError> {
+      let _timer = metrics.indexing_objects_latency.start_timer();
+      let checkpoint_seq = data.checkpoint_summary.sequence_number;
+      let deleted_objects = data
+          .transactions
+          .iter()
+          .flat_map(|tx| get_deleted_objects(&tx.effects))
+          .collect::<Vec<_>>();
+      let deleted_object_ids = deleted_objects
+          .iter()
+          .map(|o| (o.0, o.1))
+          .collect::<HashSet<_>>();
+      let indexed_deleted_objects = deleted_objects
+          .into_iter()
+          .map(|o| IndexedDeletedObject {
+              object_id: o.0,
+              object_version: o.1.value(),
+              checkpoint_sequence_number: checkpoint_seq,
+          })
+          .collect();
+
+      let (latest_objects, intermediate_versions) = get_latest_objects(data.output_objects());
+
+      let live_objects: Vec<Object> = data
+          .transactions
+          .iter()
+          .flat_map(|tx| {
+              let CheckpointTransaction {
+                  transaction: tx,
+                  effects: fx,
+                  ..
+              } = tx;
+              fx.all_changed_objects()
+                  .into_iter()
+                  .filter_map(|(oref, _owner, _kind)| {
+                      // We don't care about objects that are deleted or updated more than once
+                      if intermediate_versions.contains(&(oref.0, oref.1))
+                          || deleted_object_ids.contains(&(oref.0, oref.1))
+                      {
+                          return None;
+                      }
+                      let object = latest_objects.get(&(oref.0)).unwrap_or_else(|| {
+                          panic!(
+                              "object {:?} not found in CheckpointData (tx_digest: {})",
+                              oref.0,
+                              tx.digest()
+                          )
+                      });
+                      assert_eq!(oref.1, object.version());
+                      Some(object.clone())
+                  })
+                  .collect::<Vec<_>>()
+          })
+          .collect();
+
+      let changed_objects = live_objects
+          .into_iter()
+          .map(|o| IndexedObject::from_object(checkpoint_seq, o, None))
+          .collect::<Vec<_>>();
+
+      Ok(TransactionObjectChangesToCommit {
+          changed_objects,
+          deleted_objects: indexed_deleted_objects,
+      })
     }
 
     async fn index_transactions(
