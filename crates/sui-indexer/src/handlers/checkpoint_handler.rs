@@ -6,6 +6,7 @@ use crate::models::display::StoredDisplay;
 use async_trait::async_trait;
 use itertools::Itertools;
 use mysten_metrics::{get_metrics, spawn_monitored_task};
+use sui_types::digests::TransactionDigest;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use sui_rest_api::CheckpointData;
@@ -276,7 +277,7 @@ impl CheckpointHandler {
 
       let (latest_objects, intermediate_versions) = get_latest_objects(data.output_objects());
 
-      let live_objects: Vec<Object> = data
+      let live_objects: Vec<(TransactionDigest, Object)> = data
           .transactions
           .iter()
           .flat_map(|tx| {
@@ -302,7 +303,7 @@ impl CheckpointHandler {
                           )
                       });
                       assert_eq!(oref.1, object.version());
-                      Some(object.clone())
+                      Some((*tx.digest(), object.clone()))
                   })
                   .collect::<Vec<_>>()
           })
@@ -310,7 +311,7 @@ impl CheckpointHandler {
 
       let changed_objects = live_objects
           .into_iter()
-          .map(|o| IndexedObject::from_object(checkpoint_seq, o, None))
+          .map(|o| IndexedObject::from_object(checkpoint_seq, o.0, o.1, None))
           .collect::<Vec<_>>();
 
       Ok(TransactionObjectChangesToCommit {

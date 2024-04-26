@@ -272,6 +272,7 @@ pub struct IndexedObject {
     pub object_version: u64,
     pub object_digest: ObjectDigest,
     pub checkpoint_sequence_number: u64,
+    pub tx_digest: TransactionDigest,
     pub owner_type: OwnerType,
     pub owner_id: Option<SuiAddress>,
     pub object: Object,
@@ -283,6 +284,7 @@ pub struct IndexedObject {
 impl IndexedObject {
     pub fn from_object(
         checkpoint_sequence_number: u64,
+        tx_digest: TransactionDigest,
         object: Object,
         df_info: Option<DynamicFieldInfo>,
     ) -> Self {
@@ -298,6 +300,7 @@ impl IndexedObject {
 
         Self {
             checkpoint_sequence_number,
+            tx_digest,
             object_id: object.id(),
             object_version: object.version().value(),
             object_digest: object.digest(),
