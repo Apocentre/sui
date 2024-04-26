@@ -256,18 +256,21 @@ impl CheckpointHandler {
       let deleted_objects = data
           .transactions
           .iter()
-          .flat_map(|tx| get_deleted_objects(&tx.effects))
+          .flat_map(|tx| {
+            get_deleted_objects(&tx.effects).into_iter().map(|d| (*tx.transaction.digest(), d))
+          })
           .collect::<Vec<_>>();
       let deleted_object_ids = deleted_objects
           .iter()
-          .map(|o| (o.0, o.1))
+          .map(|o| (o.1.0, o.1.1))
           .collect::<HashSet<_>>();
       let indexed_deleted_objects = deleted_objects
           .into_iter()
           .map(|o| IndexedDeletedObject {
-              object_id: o.0,
-              object_version: o.1.value(),
+              object_id: o.1.0,
+              object_version: o.1.1.value(),
               checkpoint_sequence_number: checkpoint_seq,
+              tx_digest: o.0,
           })
           .collect();
 

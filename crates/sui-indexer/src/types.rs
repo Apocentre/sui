@@ -316,6 +316,7 @@ pub struct IndexedDeletedObject {
     pub object_id: ObjectID,
     pub object_version: u64,
     pub checkpoint_sequence_number: u64,
+    pub tx_digest: TransactionDigest,
 }
 
 #[derive(Debug)]
